@@ -134,6 +134,7 @@ describe("external verification in the committed-candidate lifecycle", () => {
             "-c",
             "user.email=mill-external@example.invalid",
             "commit",
+            "--no-gpg-sign",
             "-m",
             "test: external acceptance",
           ],
