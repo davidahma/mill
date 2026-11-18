@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "candidateCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "baseCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "candidateCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "candidateTree": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "changedPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "checklists": {
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+              "path": {
+                "type": "string",
+                "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^*?[\\]\\\\]+$"
+              },
+              "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+            },
+            "required": ["id", "path", "digest"],
+            "additionalProperties": false
+          }
+        },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      },
+      "required": [
+        "baseCommit",
+        "candidateCommit",
+        "candidateTree",
+        "changedPaths",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "gate": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "string", "const": "1" },
+        "policy": { "type": "string", "const": "p0_p1" },
+        "configDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "blockingFindingIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "advisoryFindingIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "policy",
+        "configDigest",
+        "blockingFindingIds",
+        "advisoryFindingIds"
+      ],
+      "additionalProperties": false
+    },
+    "summary": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+          "class": {
+            "type": "string",
+            "enum": [
+              "correctness",
+              "security",
+              "data-loss",
+              "provenance",
+              "compatibility",
+              "authority",
+              "maintainability",
+              "style"
+            ]
+          },
+          "title": { "type": "string", "minLength": 1 },
+          "body": { "type": "string", "minLength": 1 },
+          "file": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "line": {
+            "anyOf": [
+              { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+              { "type": "null" }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "class",
+          "title",
+          "body",
+          "file",
+          "line"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schemaVersion", "candidateCommit", "summary", "findings"],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/review-result.schema.json",
+  "title": "ReviewResult"
+}

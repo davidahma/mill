@@ -1,0 +1,640 @@
+# Changelog
+
+All notable changes follow Keep a Changelog and Semantic Versioning.
+
+## [Unreleased]
+
+## [0.10.0] - 2026-09-22
+
+### Added
+
+- Add an optional between-invocation model-token allowance with phase-level
+  measured usage for build, repair, and review calls.
+- Select bounded repository review checklists from changed paths and task risk,
+  then bind their base-revision digests into the complete review scope.
+- Use one deterministic local promotion-readiness policy in admitted delivery,
+  merge, and standalone maintainer review.
+
+### Changed
+
+- Record maintainer-review provider usage and checklist focus in its immutable
+  receipt.
+- Retain provider measurements from failed calls when available without
+  estimating missing tokens or currency cost.
+
+## [0.9.0] - 2026-09-21
+
+### Added
+
+- Add a GitHub Codex review mode that requires exact-head completion, retains
+  hosted feedback, and binds that evidence into attended merge approval.
+- Split draft readiness from merge when readiness starts hosted review.
+
+### Fixed
+
+- Recheck required hosted review and feedback during post-merge closure.
+- Reject hosted-review drift between merge planning and execution.
+
+### Changed
+
+- Shorten the installation command and rewrite the README around the first
+  reviewed pull request, trust boundary, supported scope, and recovery path.
+
+## [0.8.1] - 2026-09-21
+
+### Fixed
+
+- Recover unchanged candidates after eligible verifier infrastructure failures
+  through an exact attended plan, without another builder attempt.
+- Preserve the original blocker when a follow-up command is rejected.
+
+### Added
+
+- A single bounded verification/review recovery allowance, with its own expiry
+  and controller identity while retaining the original run history.
+
+## [0.8.0] - 2026-09-21
+
+### Added
+
+- Optional frozen P0/P1 review policy with retained advisory findings across
+  review, repair, draft delivery, merge and outcome reporting.
+- Packaged exact-candidate maintainer review and receipt checking.
+- Dependency policy validation for Mill and the downstream starter.
+
+### Fixed
+
+- Redact private review and repair payloads from support event output.
+- Exclude scratch worktrees from local tests and lint.
+- Correct starter Dependabot grouping syntax and keep routine majors separate.
+
+## [0.7.2] - 2026-09-19
+
+### Fixed
+
+- Pass explicit approval and attendance flags to `run next` through the CLI
+  parser while retaining required approvals and isolation checks.
+- Capture release recovery logs with old and new GitHub CLI versions. Preserve
+  exact bytes privately and suppress captured output in read-error diagnostics.
+- Write fake OCI state atomically and complete cancellation cleanup even when a
+  test assertion fails.
+
+### Added
+
+- A protected recovery workflow that can finish GitHub publication after a
+  proven successful npm publish. It verifies the original qualified artifact and
+  cannot publish npm again or overwrite an existing GitHub Release.
+- A longer bounded npm metadata read window for delayed registry propagation.
+
+## [0.7.1] - 2026-09-19
+
+### Fixed
+
+- Apply declared outcome scope consistently to expert tasks, compiled tasks,
+  founder execution and closure. Bind the first task for an approved outcome
+  without pretending to supersede a packet, and reject ready outcomes without
+  valid task bindings.
+- Require exact attestations for human and external scenarios even when their
+  supporting commands pass. Allow preservation-only work without claiming new
+  behavior.
+- Retain OCI resource ownership across controller interruption and block unsafe
+  cleanup or retries until ambiguous launches are reconciled.
+- Bind reconstructed release evidence to the actual qualification, tagged
+  source, tarball and verified registry identity. Retry bounded metadata reads
+  after npm publication and retain final npm Latest and GitHub Latest
+  observations.
+
+## [0.7.0] - 2026-09-16
+
+### Added
+
+- Add a read-only `init propose` cross-check that reports coherent draft inputs
+  without compiling mismatched or unapproved authority into a task.
+- Add explicit, bounded verifier artifact retention and a redacted development
+  evidence ledger for measured route and effort facts.
+- Add a reproducible pnpm workspace OCI canary and two disposable historical
+  maintenance replays with frozen application checks and explicit limits.
+
+### Fixed
+
+- Keep unclassified required GitHub feedback visible, require an explicit
+  `APPROVED` review state, and permit safe cancellation from ordinary
+  `awaiting_human` state while preserving delivery receipts.
+- Make diagnostic state opens non-mutating and harden forward migration, backup,
+  restore, foreign-key, and historical-state recovery behavior.
+- Remove raw worker stderr from routine public error envelopes.
+
+### Changed
+
+- Retain draft and published GitHub Release evidence in order, with source,
+  workflow, package, qualification, registry, and observed-release bindings.
+- Rewrite first-path, reporting, development, and operator guidance around the
+  supported attended flow and its limits.
+
+## [0.6.0] - 2026-09-15
+
+### Added
+
+- Add `millctl --json init propose`, a read-only summary that joins an inspected
+  PRD with existing planning drafts and compiled task output.
+- Add `millctl --json report`, a redacted local view of lifecycle, validation,
+  elapsed time, recorded usage, and opt-in self-hosting progress.
+- Add a fixed-name `MILL_GITHUB_TOKEN` option for an attended shipper's reviewed
+  fine-grained token. Token bytes remain outside Mill configuration, state,
+  prompts, and support output.
+- Add one fixture-only two-repair experiment that repeats validation and review
+  after each repaired candidate.
+
+### Changed
+
+- Limit the packed public interface to `millctl` and JSON schemas. Direct
+  package-root JavaScript imports now fail.
+- Add a numbered local-state migration from v3 to v4 for fixture-only second
+  repair capacity. Supported prior state preserves durable records.
+- Parse and re-encode release qualification inputs before dispatch so malformed
+  JSON blocks before qualification assembly.
+- Rewrite the README, operator guidance, planning guide, and release record in
+  direct language. Preserve material limits beside the features they constrain.
+
+## [0.5.0] - 2026-09-15
+
+### Added
+
+- Add `millctl --json stats`, a redacted aggregate lifecycle view that reports
+  local migration history and run, builder-attempt, and repair counts without
+  exposing task IDs, paths, prompts, credentials, raw output, event payloads,
+  review data, or delivery receipts.
+- Add an operator glossary and a repository-scoped GitHub delivery-access guide.
+- Add property-based canonical JSON and repository-path tests, state-migration
+  regression coverage, and stable JSON-contract coverage for `stats`.
+
+### Changed
+
+- Replace implicit SQLite state-version handling with atomic, numbered,
+  idempotent migrations and a durable migration ledger. Existing v1 and v2 local
+  state upgrades to v3; future, conflicting, incomplete, and tampered migration
+  state blocks before use.
+- Surface Mill's existing attended `start` route and supported CLI/schema
+  interface more directly in the README. Direct TypeScript imports remain
+  prerelease APIs.
+- Represent the built-in `codex-cli` worker through a registry seam without
+  adding a second adapter or changing the trusted-host boundary.
+- Let local documentation, release-validation, package-canary, and test tooling
+  use an explicit `MILL_GIT_PATH` when the system Git is not the active Git.
+- Move the historical greenfield work plan to `docs/history/`.
+
+## [0.4.0] - 2026-09-14
+
+### Added
+
+- Add source-only documentation guidance, a digest-pinned writing procedure, a
+  changed-Markdown checker, and packaged Node/npm policy starters.
+- Add a constrained, source-only pnpm workspace preparation path that binds the
+  manager version, lockfile, workspace file, and direct package manifests.
+
+### Fixed
+
+- Let a base-owned DCO workflow admit only a verified, single-commit Dependabot
+  exception while retaining author-matching sign-offs for human commits.
+
+### Changed
+
+- Add repository-owned playbook contracts, read-only metadata discovery and
+  explicit task selection that freezes an index and selected playbook bytes in
+  the context manifest.
+- Add a schema-backed, read-only run timeline that validates durable event
+  ordering and lifecycle transitions without exposing event payloads.
+- Add a schema-backed, read-only run outcome projection that summarizes bound
+  lifecycle, validation, review, delivery, adaptation and usage evidence without
+  exposing raw state or inferring owner acceptance.
+- Add a second deterministic synthetic webhook adaptation replay with separate
+  provider authority, configurations and frozen failure behavior.
+
+- Keep reusable migration knowledge separate from repository-owned acceptance
+  and verification. Playbook corrections require a separate reviewed change and
+  cannot recertify the run that discovered them.
+- Refresh the exact zod, Node type, and TypeScript ESLint dependency pins, with
+  regenerated schema snapshots where zod's JSON Schema output changed.
+
+## [0.3.2] - 2026-09-09
+
+### Added
+
+- Add optional, digest-bound integration-adaptation authority for provider
+  notices, applicability evidence, frozen fixtures, configurations, workflows,
+  and a complete check-or-exclusion matrix.
+- Record offline configuration-level adaptation evidence alongside ordinary
+  candidate validation without claiming live provider execution or owner
+  acceptance.
+
+### Changed
+
+- Let an approved baseline select preservation commands while candidate
+  verification still executes every required command. A selected baseline must
+  retain preservation scenarios and command-verified affected invariants.
+- Keep adaptation-fixture expiry as an authority deadline through attended merge
+  effects, and accept a dependency-free snapshot only when the root lock graph
+  proves it empty.
+- Make public release documentation point to the current version record instead
+  of carrying stale distribution identities in the operator contract.
+
+## [0.3.1] - 2026-09-08
+
+### Changed
+
+- Update the release workflow's pinned artifact actions to
+  `actions/upload-artifact` 7.0.1 and `actions/download-artifact` 8.0.1.
+- Update the development test toolchain to Vitest 5.0.0 and typescript-eslint
+  8.69.0.
+- Retain strict project type checking while skipping the internally inconsistent
+  upstream Vitest/Vite declaration checks published for the Vitest 5.0.0
+  transition.
+- Publish a plainly labelled normal GitHub Release for each qualified public
+  alpha so GitHub can mark the completed release as Latest without hiding the
+  alpha support limits.
+
+## [0.3.0] - 2026-09-05
+
+### Added
+
+- Add a versioned, read-only `millctl continuation` packet that binds durable
+  run identity, recovery observations, provider-measured resource fields, and
+  one attended next action without advancing the lifecycle.
+- Add deterministic brownfield harness evaluation fixtures for stale identity,
+  failed native validation, missing worker settlement, uncertain draft delivery,
+  and the human merge boundary.
+- Add an explicit builder-isolation boundary command and reject unqualified
+  isolated execution rather than silently treating a disposable worktree as
+  hostile-host containment.
+
+### Changed
+
+- Preserve provider-reported cache-input tokens when a completed Codex event
+  supplies them, while keeping missing measurements partial/unavailable and
+  currency cost unavailable.
+- Document the bounded future forms for revision-bound symbol-index context and
+  advisory governed improvement records. Neither introduces a graph service,
+  automatic worker change, or new authority path.
+
+The preserved `0.3.0` artifact passed two independent builds, exact-tag audit,
+packed qualification, the pinned v0.1.5 independent verifier, npm provenance and
+registry-package requalification. Both npm `alpha`/`latest` and GitHub Latest
+point to `0.3.0`. See [release evidence](docs/releases/v0.3.0.md).
+
+## [0.2.1] - 2026-09-05
+
+Retain the architecture follow-through below and explicitly prepare the pinned
+verifier image on each fresh full-canary runner, including before immutable npm
+publication. Native workflow policy rejects missing, late, conditional,
+failure-ignored or noncanonical preparation. The `v0.2.0` tag remains unchanged
+as prepublication evidence; no `0.2.0` npm version or GitHub Release was
+published.
+
+The preserved `0.2.1` artifact passed independent qualification, OIDC
+publication, npm signatures/provenance and registry-canary checks. GitHub
+finalization was recovered by exact release ID after a duplicate draft/public
+tag lookup selected an empty release. The failed workflow is retained, not
+replayed. Separately approved promotion makes both npm `alpha`/`latest` and
+GitHub Latest point to `0.2.1`. See [release evidence](docs/releases/v0.2.1.md).
+
+### Architecture follow-through
+
+- Add opt-in, exact-plan attended readiness/merge with producer-bound CI,
+  strict-protection checks, separate intent journals and readback recovery.
+- Bind local review to the complete base-to-candidate diff, including
+  preparatory commits; add pre-effect attended scope refresh without changing
+  candidate identity or resetting budgets. Preserve one bounded
+  native-validation repair.
+- Compile source-backed change requests into dependency-checked version-2 tasks;
+  bind explicit supersession and propose closure from finalized evidence.
+- Add bounded repository-map context and experimental native Node ESM/npm
+  adoption without replacing existing source or native oracles.
+- Back up generated authority-plan receipts in SQLite and require committed
+  readback before purge; preserve partial apply worktrees. Reject existing task
+  output paths before approval; add attended exact-plan abandonment retaining
+  the original plan and partial-output commit without claiming successful apply.
+  Centralize pending-effect admission for both authority compilers and refuse
+  authority purge when ignored or untracked foreign content remains.
+- Reconcile interrupted push/PR intent independently of enclosing run status;
+  settle the effect journal and lifecycle atomically without losing cancellation
+  or the original retry budget.
+- Sanitize public PR subjects, omit raw evidence from routine status,
+  distinguish structural audits and report measured/partial/unavailable usage
+  honestly.
+- Qualify later releases with the independently pinned v0.1.5 verifier before
+  publishing one preserved artifact through the existing OIDC boundary.
+
+These changes retain the bounded public-alpha support claim. The v0.1.5 genesis
+release remains the independently pinned historical trust root.
+
+### Added
+
+- Persist `configured` or `implicit_default` post-merge policy provenance in
+  every new delivery so historical compatibility cannot relax future records.
+
+- Explicit OCI test/package command opt-in for fixed, bounded executable fixture
+  scratch outside the repository, retaining default noexec containment and
+  read-only source/dependencies.
+- A deterministic `millctl discover` command and public schema for bounded,
+  source-revision-bound TypeScript repository evidence, conservative importer
+  leads, static test-selection reporting, and stale-map detection.
+
+### Changed
+
+- Configure `validate` and `codeql` for resulting-main readback while retaining
+  `validate`, `dependency-review`, and `codeql` for the exact pull-request head.
+
+- Make native cleanup retain mounted output roots and use Vitest's native
+  configuration loader with caches/reports in generated output scratch.
+
+### Fixed
+
+- Permit one historical full-list post-merge policy binding only when the record
+  lacks provenance and a prior binding, the exact reviewed candidate proves an
+  implicit default, and authoritative merge readback establishes all other
+  delivery identities. Persist the configured nonempty subset and its
+  configuration digest as `legacy_migrated`. The
+  [migration record](docs/canaries/post-merge-default-policy-migration.md)
+  documents delivery `01801a1b-58f9-480f-8cee-54ea2bbeabb2` without claiming
+  live recovery or weakening original PR checks.
+
+- Retry npm signature verification within a fixed budget because registry
+  package bytes and attestations can become visible at slightly different times,
+  while still failing closed when the budget is exhausted.
+- Record the durable tag URL in final GitHub Release evidence instead of the
+  temporary URL returned while a release is still a draft.
+
+## 0.2.0 — publication held
+
+The architecture changes listed under `0.2.1` were initially prepared as
+`0.2.0`. Its annotated tag and successful candidate qualification are retained;
+publication was held before npm or GitHub Release creation because the fresh
+publish runner lacked explicit verifier-image preparation. Version `0.2.1`
+contains the repair and fresh qualification. No tag was moved or reused.
+
+## [0.1.5] - 2026-09-03
+
+Version `0.1.4` passed complete candidate qualification and its exact artifact
+was published under the npm `bootstrap` tag to create the package identity that
+npm requires before trusted publishing can be configured. That bootstrap used
+the maintainer's 2FA session, has no CI provenance or GitHub Release, and is not
+the supported alpha. The package-specific OIDC publisher and protected GitHub
+environment are now active. Version `0.1.5` completed the provenance-backed
+release and is the first qualified public alpha.
+
+### Changed
+
+- Advance the unchanged qualified package identity for publication through the
+  protected OIDC workflow and complete npm and GitHub Release readback.
+
+## [0.1.4] - 2026-09-03
+
+Version `0.1.3` was retained as failed prepublication evidence after both clean
+builders rejected its annotated tag for omitting the mandatory reviewed-tree
+trailer. Version `0.1.4` was the first fully qualified candidate and later
+became the package-identity bootstrap described above.
+
+### Changed
+
+- Advance the package identity and release records without moving the failed
+  tag; require the documented local tag-identity check before the `v0.1.4` tag
+  is first pushed.
+
+## [0.1.3] - 2026-09-03
+
+Version `0.1.2` was retained as failed prepublication evidence after the full
+Linux artifact canary passed but qualification could not read its generated
+evidence outside the repository safety root. It was never published to npm or as
+a GitHub Release. Version `0.1.3` was the fourth prepublication candidate.
+
+### Fixed
+
+- Stage generated qualification evidence at a collision-checked transient path
+  inside the repository safety root for validation, remove it on every exit, and
+  preserve the same bytes in the release artifact.
+- Apply the same bounded staging protocol when the separate publish job
+  revalidates the preserved candidate.
+
+## [0.1.2] - 2026-09-03
+
+Version `0.1.1` was retained as failed prepublication evidence after the real
+Linux packed-artifact canary exposed root-owned bind-mount output. It was never
+published to npm or as a GitHub Release. Version `0.1.2` was the third
+prepublication candidate.
+
+### Fixed
+
+- Run release-canary containers as the invoking POSIX user and group with
+  writable container-local cache homes, so Linux bind-mounted browser and build
+  output remains removable by the runner.
+
+## [0.1.1] - 2026-09-03
+
+Version `0.1.0` was retained as failed prepublication evidence after GitHub's
+checkout action exposed an audit compatibility defect. It was never published to
+npm or as a GitHub Release. Version `0.1.1` was the second prepublication
+candidate.
+
+### Fixed
+
+- Accept only the exact inert `gc.auto=0` repository setting written by GitHub's
+  checkout action while continuing to reject other unclassified Git
+  garbage-collection configuration.
+- Print the structured exact-tag audit report when release qualification blocks,
+  and select release notes from the immutable requested tag rather than a
+  hard-coded version.
+- Accept non-authoritative Codex review progress messages while consuming only
+  the CLI's private, bounded final-message file as the structured review result.
+- Qualify process-group cancellation on Linux by recognizing a killed zombie
+  descendant as terminated without accepting an executing descendant.
+- Bind public-alpha support evidence to the exact verifier image embedded in the
+  qualified recipe, preventing a stale container identity from entering a
+  release candidate.
+- Give the packed public-alpha canary explicit adversarial evidence so the
+  high-risk greenfield and adoption plans pass the same admission rules as real
+  repositories.
+- Prepare release-canary dependencies inside the exact Linux verifier image so
+  macOS optional native packages cannot leak into the no-network OCI gate.
+- Format pre-existing adoption authority artifacts with the downstream native
+  style so release qualification measures adoption rather than fixture drift.
+- Use a single explicit integration-test timeout that remains stable under the
+  full parallel suite instead of accumulating per-test timing exceptions.
+- Align generated YAML wrapping with the generated repository's native formatter
+  so realistic product contracts qualify before Git publication.
+
+### Added
+
+- Pre-alpha `millctl` package foundation with exact-version lock enforcement.
+- Stable human and JSON result envelopes.
+- Compact executable schemas for repository, product, blueprint, scenario,
+  outcome, configuration, and lock contracts.
+- Non-executing PRD inspection, static repository adoption scan, and truthful
+  mode-aware doctor command.
+- Pinned least-privilege CI, CodeQL, dependency review, DCO, package smoke,
+  coverage, and trusted-publishing release foundations.
+- Attended local task delivery through explicit canonical approval, a disposable
+  worktree, lifecycle-owned commit, digest-pinned no-network OCI verification,
+  and exact-candidate read-only Codex review.
+- Repository-namespaced SQLite state with append-only events, exclusive writer
+  leases, cancellation, interruption recovery, backup/validated restore,
+  reviewed-or-terminal purge, and redacted support export.
+- Executable task-packet, context-manifest, validation-evidence, and
+  review-result contracts with aligned runtime and JSON Schema validation.
+- Exact-candidate draft-PR planning, attended push/open, unknown-effect
+  reconciliation, paginated GitHub policy observation, human merge gating, and
+  exact post-merge closure with an executable delivery-record contract.
+- Coordinator-enforced remote attendance, one readback-authorized effect retry,
+  changing-blocker replacement, and database-swap state-restore recovery.
+- Source manifests, stable product invariants and decision cards, canonical
+  specification assessment/promotion/diff, approved impact manifests, and
+  item-level new-behavior versus preservation evidence.
+- One internal Codex worker adapter with immutable profile and invocation
+  contracts, durable admission/launch/settlement state, recursive instruction
+  freezing, and strict provider-event settlement.
+- A source-qualified Node.js 24, Next.js 16, and React 19.2 web-recipe decision
+  for the Wave 4B greenfield path.
+- One exact bundled Node.js 24.18.1, npm 11.16.0, Next.js 16.3.4, React 19.2.8,
+  and Playwright 1.62.1 web recipe with native format, lint, type, unit,
+  integration, browser, build, package, and CI gates.
+- Deterministic separately approved greenfield and compatible-adoption plans,
+  transactional apply, generated-file ownership in `mill.lock`, manual detach
+  planning, and isolated adoption branches.
+- Attended lock/image-bound dependency preparation plus `run next`, resumable
+  `start`, and two-step `ship --draft` founder commands over existing lifecycle
+  authority.
+- Read-only exact-candidate audits across product, code, UX, accessibility,
+  security, dependencies, architecture, operations, and release.
+- Public-alpha qualification contracts for exact support tuples, five-or-more
+  dependent accepted changes, item-level preservation, rejected seeded faults,
+  packed canaries, and source-qualified usage.
+- A two-phase genesis release workflow that compares independent clean builds,
+  preserves one tarball, qualifies that exact artifact, publishes it through npm
+  trusted OIDC, and verifies npm and GitHub Release readback.
+- A value-led operator README, coding-agent operating contract, release and
+  withdrawal runbook, support policy, and Wave 5 canary guide.
+
+### Changed
+
+- Dependabot preserves the qualified Node type and TypeScript major boundaries;
+  incompatible major upgrades require an intentional toolchain qualification.
+- Executable JSON Schemas are generated from runtime contract inputs and checked
+  for exact drift in the native gate.
+- Repository apply now uses target-scoped exclusion, no-replace reservation, and
+  final atomic Git-authority publication; dependency snapshots bind npm/registry
+  identity, validate lock origins and installed-tree content, stop and clean up
+  on cancellation, and founder start binds the selected PRD before spend.
+- New baseline qualifications and runs require task-packet version 2 with exact
+  continuity authority; version 1 remains byte-stable for in-flight resume.
+- OCI command scratch is explicit and limited to comma-free top-level tmpfs
+  directories; dependency inputs remain exact-lock-bound and read-only.
+- Repository plans use one non-self-referential approval identity recorded in
+  the returned plan and `mill.lock`; founder resume selects preflight and
+  dependency work from the persisted lifecycle stage.
+- Recipe tasks require named behavior-specific oracles; integration plans bind
+  the generator version and canonical target, adoption binds exact lock/oracle
+  bytes, and dependency snapshots derive identity from frozen lock copies.
+- Canonical target identity is digest-bound, final greenfield publication never
+  replaces a late-created target, adoption blocks symbolic links and
+  credential-like files, and integration writes reject unsafe ancestors.
+- Generated impact and task risk now follows affected invariant criticality,
+  medium/high risk requires non-normal scenario evidence, and active-run
+  admission is serialized with run creation.
+- Founder resume preflights exact remote-review and interrupted recovery before
+  spending its bounded repair, and integration approvals must be active ISO
+  timestamps.
+- Recipe integration rejects cross-outcome scenarios, duplicate acceptance
+  references, unprovable invariant modes, builder-writable PRDs, `.npmrc`, and
+  non-root or credential/query-bearing npm lock-source bypasses.
+
+### Deprecated
+
+- None.
+
+### Removed
+
+- None.
+
+### Fixed
+
+- Complete SHA-512 integrity parsing and CommonMark punctuation escaping close
+  truncated-integrity and product-title interpretation gaps.
+- Exact-version recovery, DCO parsing, per-job workflow bounds, JSON usage
+  errors, malformed-contract classification, operator-tool discovery, Node
+  readiness, valid `..name` paths, Git-root lock authority, JSON help isolation,
+  and runtime/JSON Schema parity now honor their documented contracts.
+- Codex builder invocation uses approval routing's workspace-write sandbox
+  without passing the mutually exclusive explicit sandbox selector.
+- Structured review schemas use Codex-compatible explicit and nullable types;
+  failed provider JSONL retains only a safe error code for diagnosis.
+- Builder and reviewer invocations disable host skill search so operator-global
+  skills cannot silently widen behavior or inflate provider usage.
+- Transient or invalid review-provider results can retry the unchanged verified
+  candidate once through a durable per-candidate attempt budget, without
+  consuming the one post-repair review generation.
+- Builder, retry, repair, and review completions record source-qualified token
+  usage while refusing to invent currency cost.
+- Baseline approval now requires matching successful qualification state and
+  binds the exact base, task, command configuration, and normalized evidence.
+- Exact-candidate checks reject ignored-file contamination, repair reasserts the
+  reviewed candidate before writes, and failed context setup removes provisional
+  worktree and branch state.
+- Bound task, configuration, authority, context, instruction, and declared
+  command-control inputs cannot overlap candidate output scope or be rewritten
+  into a validated commit.
+- Legacy context manifests retain their exact bytes; new runs freeze Codex
+  instruction override precedence, reject instruction-path drift, and keep
+  effective instructions outside candidate write scope. Semantic authority
+  rejects duplicate IDs, unbound oracle commands, future-dated approvals, and
+  attestations that do not bind the complete canonical item. Conflicting worker
+  terminal events fail closed; review evidence and worker settlement commit
+  atomically, while blocked planning assessments return truthful failures.
+- Writer exclusion now uses a crash-released SQLite transaction instead of a
+  stale-directory protocol; cancellation is polled by the exact foreground
+  owner, persisted PIDs are never signalling authority, and delayed exits clear
+  active attempts only through compare-and-swap.
+- Named OCI verifier containers are force-removed under an independent cleanup
+  deadline after success, failure, timeout, output exhaustion, or cancellation.
+- OCI verification safely aliases comma-bearing bind paths, and restoring an
+  older state backup quarantines newer unreferenced worktrees with durable
+  recovery evidence rather than deleting them.
+- Planning promotion now rebinds approval to the proposal's current canonical
+  bytes; task semantics and selected scenarios must match approved impact, and
+  inactive impact exceptions grant no authority.
+- Candidate publication and mutating-worker settlement are atomic, review
+  attempts use their exact per-candidate generation, and worker profile digests
+  bind the prompt-template bytes actually used by the adapter.
+- Product outcomes now carry stable IDs that impact manifests must resolve;
+  single-blueprint proposals are valid, duplicate source identities block, and
+  expired effect authority cannot strand readback or truthful closure.
+- Worker exit evidence and active-process clearing now commit atomically, so a
+  controller crash after process exit leaves a safely reconcilable invocation.
+- Recipe verification uses a read-only workspace skeleton with individually
+  bound source entries, bounded writable scratch and browser shared memory,
+  delayed-mount cleanup handling, and fail-closed occupied or unrepresentable
+  mount targets.
+
+### Security
+
+- Static inspection rejects path escape, symlink targets, oversized inputs,
+  malformed UTF-8, executable or unclassified Git configuration, incomplete or
+  over-budget trees, and repository-controlled command execution. Lock markers
+  fail closed; scan digests include Git hazard and truncation state. Git config
+  syntax and linked-worktree metadata now fail closed at their parsing and
+  indirection boundaries, and explicit tool overrides must be absolute.
+- Candidate building is restricted to an exact-base disposable worktree and
+  approved paths. Tracked symlinks and configured sensitive paths are rejected
+  before builder access; Git hooks and transforming attributes are disabled or
+  blocked. Required verification runs without network under resource bounds,
+  process-group cancellation escalates across signal-ignoring descendants, and
+  public runtime output excludes host worktree paths and frozen context
+  contents.
+- Codex invocations ignore ambient execution rules, and OCI verification uses a
+  clean read-only candidate workspace so uncommitted ignored artifacts cannot
+  affect promotion evidence.
+- GitHub credentials stay behind the operator-owned `gh` and Git credential
+  helper boundary. Exact actor/repository/remote binding, expiring approval,
+  expected-head push leases, immutable PR markers, effect journaling, and
+  authoritative readback prevent builder access and blind duplicate mutation.
+  Durable cancellation is polled before and during mutations; top-level and
+  inline review findings, exact merger identity, provable merge shape, and
+  non-false-green post-merge results remain fail-closed.

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "productContractDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "scenarios": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "exception",
+              "degradation",
+              "recovery",
+              "authority",
+              "adversarial"
+            ]
+          },
+          "given": {
+            "minItems": 1,
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "when": {
+            "minItems": 1,
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "then": {
+            "minItems": 1,
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "oracleOwner": {
+            "type": "string",
+            "enum": ["repository", "human", "external"]
+          },
+          "acceptanceRefs": {
+            "default": [],
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "invariantRefs": {
+            "default": [],
+            "type": "array",
+            "items": { "type": "string", "pattern": "^INV-[A-Z0-9][A-Z0-9-]*$" }
+          },
+          "coverage": {
+            "default": "both",
+            "type": "string",
+            "enum": ["new_behavior", "preservation", "both"]
+          },
+          "visibility": {
+            "default": "builder_visible",
+            "type": "string",
+            "enum": ["builder_visible", "reviewer_owned", "human_acceptance"]
+          },
+          "executionRef": { "type": "string", "minLength": 1 },
+          "recipeOracle": { "type": "string", "minLength": 1 },
+          "forbidden": {
+            "default": [],
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "required": ["id", "kind", "given", "when", "then", "oracleOwner"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schemaVersion", "productContractDigest", "scenarios"],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/scenario-set.schema.json",
+  "title": "ScenarioSet"
+}

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "ownerRepository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+    },
+    "consumerRepository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?$"
+    },
+    "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "platform": {
+      "type": "string",
+      "pattern": "^(?:linux|darwin|windows)\\/(?:amd64|arm64)$"
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "imageConfigDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "archiveSha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": ["manifestDigest", "imageConfigDigest", "archiveSha256"],
+      "additionalProperties": false
+    },
+    "rollback": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?$"
+        },
+        "artifactDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": ["version", "artifactDigest"],
+      "additionalProperties": false
+    },
+    "transitions": {
+      "type": "object",
+      "properties": {
+        "sourceReviewed": { "type": "string", "enum": ["recorded", "pending"] },
+        "artifactQualified": {
+          "type": "string",
+          "enum": ["recorded", "pending"]
+        },
+        "pinAdopted": { "type": "string", "enum": ["recorded", "pending"] },
+        "customerQualified": {
+          "type": "string",
+          "enum": ["recorded", "pending", "not_run"]
+        }
+      },
+      "required": [
+        "sourceReviewed",
+        "artifactQualified",
+        "pinAdopted",
+        "customerQualified"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "ownerRepository",
+    "consumerRepository",
+    "version",
+    "sourceRevision",
+    "platform",
+    "artifact",
+    "rollback",
+    "transitions"
+  ],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/consumption-manifest.schema.json",
+  "title": "ConsumptionManifest"
+}

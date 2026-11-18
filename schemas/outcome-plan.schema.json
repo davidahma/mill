@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "productContractDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "outcomes": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "acceptance": {
+            "minItems": 1,
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "acceptanceIds": {
+            "minItems": 1,
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "dependsOn": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "status": {
+            "type": "string",
+            "enum": ["proposed", "approved", "ready", "blocked", "closed"]
+          },
+          "taskRef": {
+            "type": "string",
+            "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^*?[\\]\\\\]+(?:\\/\\*\\*)?$"
+          }
+        },
+        "required": ["id", "title", "acceptance", "dependsOn", "status"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schemaVersion", "productContractDigest", "outcomes"],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/outcome-plan.schema.json",
+  "title": "OutcomePlan"
+}

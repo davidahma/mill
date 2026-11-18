@@ -1,0 +1,114 @@
+# Mill delivery plan
+
+Status: public-alpha scope complete; generic development-readiness landed
+
+Owner: David Ahmann
+
+Brownfield discovery and [`integration adaptation`](integration-adaptation.md)
+are landed. The latter binds a supplied provider change to an explicit
+workflow/configuration matrix and keeps candidate evidence visibly offline and
+owner-acceptance-pending. It does not add provider monitoring, shared customer
+context, recurring coverage infrastructure or a public support claim. Brownfield
+discovery adds only read-only TypeScript source evidence and conservative change
+leads; it does not expand the public-alpha adoption recipe or delivery
+authority. Its contract, impact, and local fixture evaluation are recorded in
+`product/brownfield-discovery.md`, `product/impacts/BROWNFIELD_DISCOVERY.yaml`,
+`product/brownfield-contract.yaml`, `quality/brownfield-scenarios.yaml`, and
+`docs/canaries/brownfield-discovery.md`.
+
+Repository [playbook context](playbook-context.md) is landed source-only: it
+adds a compact, digest-pinned index and explicit task selection for reusable
+operational knowledge without adding a centralized service, MCP interface,
+automatic updates, customer acceptance or public-alpha support claim.
+
+The outcome-evidence replay landed in PR #40 on 2026-09-12. It adds a redacted,
+read-only projection of what a bounded adaptation run recorded and a second
+synthetic provider-change fixture. It does not turn local evidence into customer
+acceptance, introduce provider monitoring or customer systems, or expand
+public-alpha support.
+
+The [generic development-readiness](development-readiness.md) increment is
+landed. It adds a narrow DCO exception for verified Dependabot commits,
+repository-owned documentation guidance, packaged downstream policy starters,
+and one constrained pnpm workspace preparation shape. It does not change branch
+protection, add a product-specific integration, claim Docker qualification, or
+expand the published support matrix.
+
+The [usability and state-safety](usability-state-safety.md) increment landed in
+PR #48 on 2026-09-15. It makes the existing attended path easier to find, adds
+redacted aggregate local run statistics, records atomic numbered state
+migrations, and clarifies worker and delivery-access boundaries. It does not add
+a second worker, expand the repair budget, introduce a daemon or MCP service, or
+change delivery authority or the qualified support matrix.
+
+The [guided operations](guided-operations.md) source increment landed in PR #50
+on 2026-09-15. It assembles existing planning drafts without writing authority,
+adds a redacted local outcome report, supports a fixed-name scoped shipper token
+reference, confines a second repair to one fixture, limits the packed public API
+to CLI and schemas, and validates release input encoding. It preserves the
+v0.5.0 failed candidate as evidence and does not add a GitHub App, second
+worker, general retry increase, daemon, MCP service, or public support claim.
+The v0.6.0 release record retains its candidate qualification, protected OIDC
+publication, registry requalification, normal GitHub Release and unchanged npm
+channel state. Mill stores no bypass token. Future fresh releases publish
+directly to `latest` through the protected OIDC workflow, whose final release
+evidence is the canonical provider closure.
+
+The
+[architecture and development review follow-through](mrev-architecture-dev-review.md)
+is the current attended increment. It tightens review and recovery controls,
+adds draft coherence checks, bounded verifier artifacts, measured development
+evidence, a narrow pnpm OCI canary, and two synthetic historical maintenance
+replays. These records exercise the local workflow. They do not establish
+customer demand, recurring value, or general stack support.
+
+1. **Foundation:** repository constitution, exact-version CLI, compact schemas,
+   static source/repository inspection, native CI, and security/release design.
+2. **Local delivery:** durable state, disposable worktree, bounded Codex build,
+   committed candidate, native verification, local review, cancellation and
+   recovery.
+3. **Draft PR:** intent/receipt/readback protocol, GitHub draft PR, exact-head
+   CI/review observation, one repair wave, human merge, and truthful closure.
+4. **Product intelligence:** source-backed product contracts, explicit
+   continuity and worker admission, one qualified Node/TypeScript web recipe,
+   basic retrofit, and one resumable `start` command.
+5. **Public alpha:** audits, narrow clean-room canaries, genesis release,
+   provenance, manual rollback/detach, limitations and support matrix.
+
+Each item is one vertical delivery wave, not a bucket of microtasks. Later-wave
+choices close only before their wave. The current detailed task is in
+`product/tasks/`.
+
+Waves 1 through 3 are landed. The attended Wave 3 disposable-repository canary
+opened, reviewed, human-merged, and truthfully finalized the exact candidate;
+its resulting-main check passed. Wave 4A is landed: source and product
+continuity contracts, semantic impact evidence, immutable worker admission, and
+the selected Node.js 24/Next.js 16 web-recipe decision. Wave 4B is landed: the
+exact recipe assets, transactional greenfield and compatible-adoption
+integration, lock-bound dependency preparation, read-only offline recipe
+verification, task compilation, manual detach planning, and the resumable
+founder path. Wave 5 is complete: bounded exact-candidate audits, longitudinal
+qualification, independent artifact comparison, packed greenfield/adoption
+canaries, genesis release evidence, and the public operator and coding-agent
+documentation are landed. The five-step live canary, seeded-fault rejection,
+real draft PR, human merge, and truthful closure are complete. The immutable
+`v0.1.0` candidate stopped before publication when GitHub's checkout-added
+`gc.auto=0` setting exposed an audit compatibility gap. The immutable `v0.1.1`
+candidate passed the corrected audit and independent artifact comparison, then
+its Linux packed-artifact canary exposed root-owned bind-mount output. The
+immutable `v0.1.2` candidate proved the ownership fix and passed the complete
+Linux canary, then qualification blocked because generated evidence was outside
+the repository safety root. The immutable `v0.1.3` candidate then stopped before
+building because its annotated tag lacked the required reviewed-tree trailer.
+The `v0.1.4` candidate then passed both builders and complete qualification. Its
+exact artifact was published under the npm `bootstrap` tag solely to create the
+package identity required before npm allows a trusted publisher to be
+configured. It has no CI provenance or GitHub Release and is not the supported
+alpha. The protected GitHub environment and package-specific OIDC trust are
+active. Version `0.1.5` completed the provenance, registry requalification,
+final evidence, and GitHub Release chain and is the qualified trust root for a
+future release. The current release record identifies the exact npm `alpha` and
+`latest` pointers; bootstrap-only `0.1.4` remains deprecated evidence. The first
+alpha remains attended, single-repository, and limited to its exact qualified
+recipe and host tuple. No autonomous-planner or general stack-support claim is
+made.

@@ -1,0 +1,105 @@
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+
+import { format } from "prettier";
+import { z } from "zod";
+
+import { contractSchemas } from "../dist/contracts/schemas.js";
+import {
+  changeEvidenceSchema,
+  consumptionManifestSchema,
+} from "../dist/planning/operator.js";
+import { preparationRequestSchema } from "../dist/planning/preparation.js";
+const schemas = {
+  ...contractSchemas,
+  changeEvidence: changeEvidenceSchema,
+  consumptionManifest: consumptionManifestSchema,
+  preparationRequest: preparationRequestSchema,
+};
+
+const root = path.resolve(import.meta.dirname, "..");
+const definitions = {
+  externalVerificationRequest: [
+    "external-verification-request.schema.json",
+    "ExternalVerificationRequest",
+  ],
+  externalVerificationReceipt: [
+    "external-verification-receipt.schema.json",
+    "ExternalVerificationReceipt",
+  ],
+  changeEvidence: ["change-evidence.schema.json", "ChangeEvidence"],
+  consumptionManifest: [
+    "consumption-manifest.schema.json",
+    "ConsumptionManifest",
+  ],
+  preparationRequest: ["preparation-request.schema.json", "PreparationRequest"],
+  adaptationManifest: ["adaptation-manifest.schema.json", "AdaptationManifest"],
+  changeRequest: ["change-request.schema.json", "ChangeRequest"],
+  auditReport: ["audit-report.schema.json", "AuditReport"],
+  blueprint: ["blueprint.schema.json", "Blueprint"],
+  contextManifest: ["context-manifest.schema.json", "ContextManifest"],
+  deliveryRecord: ["delivery-record.schema.json", "DeliveryRecord"],
+  impactManifest: ["impact-manifest.schema.json", "ImpactManifest"],
+  managedRepository: ["managed-repository.schema.json", "ManagedRepository"],
+  millConfig: ["mill-config.schema.json", "MillConfig"],
+  millLock: ["mill-lock.schema.json", "MillLock"],
+  outcomePlan: ["outcome-plan.schema.json", "OutcomePlan"],
+  playbook: ["playbook.schema.json", "Playbook"],
+  playbookIndex: ["playbook-index.schema.json", "PlaybookIndex"],
+  productContract: ["product-contract.schema.json", "ProductContract"],
+  publicAlphaQualification: [
+    "public-alpha-qualification.schema.json",
+    "PublicAlphaQualification",
+  ],
+  recipeManifest: ["recipe-manifest.schema.json", "RecipeManifest"],
+  repositoryIntelligence: [
+    "repository-intelligence.schema.json",
+    "RepositoryIntelligence",
+  ],
+  releaseEvidence: ["release-evidence.schema.json", "ReleaseEvidence"],
+  repositoryIntegrationPlan: [
+    "repository-integration-plan.schema.json",
+    "RepositoryIntegrationPlan",
+  ],
+  reviewResult: ["review-result.schema.json", "ReviewResult"],
+  runOutcome: ["run-outcome.schema.json", "RunOutcome"],
+  runTimeline: ["run-timeline.schema.json", "RunTimeline"],
+  scenarioSet: ["scenario-set.schema.json", "ScenarioSet"],
+  sourceManifest: ["source-manifest.schema.json", "SourceManifest"],
+  supportTuple: ["support-tuple.schema.json", "SupportTuple"],
+  specificationProposal: [
+    "specification-proposal.schema.json",
+    "SpecificationProposal",
+  ],
+  taskPacket: ["task-packet.schema.json", "TaskPacket"],
+  validationEvidence: ["validation-evidence.schema.json", "ValidationEvidence"],
+  workerInvocation: ["worker-invocation.schema.json", "WorkerInvocation"],
+  workerProfile: ["worker-profile.schema.json", "WorkerProfile"],
+};
+
+const check = process.argv.includes("--check");
+for (const [kind, [file, title]] of Object.entries(definitions)) {
+  const schema = z.toJSONSchema(schemas[kind], { io: "input" });
+  const output = await format(
+    JSON.stringify({
+      ...schema,
+      $id: `https://github.com/davidahmann/mill/schemas/${file}`,
+      title,
+    }),
+    { parser: "json" },
+  );
+  const destination = path.join(root, "schemas", file);
+  if (check) {
+    const existing = await readFile(destination, "utf8");
+    if (existing !== output) {
+      throw new Error(`${file} is not generated from its runtime schema`);
+    }
+  } else {
+    await writeFile(destination, output, "utf8");
+  }
+}
+
+process.stdout.write(
+  check ? "schema generation check passed\n" : "schemas generated\n",
+);

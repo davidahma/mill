@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "id": { "type": "string", "minLength": 1 },
+    "productContractDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "recipe": { "type": "string", "minLength": 1 },
+    "recipeVersion": { "type": "string", "minLength": 1 },
+    "runtime": { "type": "string", "minLength": 1 },
+    "architecture": {
+      "minItems": 1,
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "risks": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  },
+  "required": [
+    "schemaVersion",
+    "id",
+    "productContractDigest",
+    "recipe",
+    "recipeVersion",
+    "runtime",
+    "architecture",
+    "risks"
+  ],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/blueprint.schema.json",
+  "title": "Blueprint"
+}

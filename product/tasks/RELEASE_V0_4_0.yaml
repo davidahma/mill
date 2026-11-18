@@ -1,0 +1,70 @@
+schemaVersion: "2"
+task_id: mill-release-v0.4.0
+status: closed
+owner: davidahmann
+base_commit: 3311f30e907adaf59494899bb324b4db31efd6e2
+execution_mode: approved_native_maintainer
+authority: product/release-v0.4.0.md
+impact_manifest: product/impacts/RELEASE_V0_4_0.yaml
+objective: >-
+  Ship the exact v0.4.0 public-alpha artifact with current installation and
+  release documentation.
+allowed_paths:
+  - package.json
+  - package-lock.json
+  - src/version.ts
+  - README.md
+  - CHANGELOG.md
+  - docs/releases/v0.4.0.md
+  - product/PLAN.md
+  - product/development-readiness.md
+  - product/release-v0.4.0.md
+  - product/impacts/RELEASE_V0_4_0.yaml
+  - product/tasks/DEVELOPMENT_READINESS.yaml
+  - product/tasks/RELEASE_V0_4_0.yaml
+authority_preparation_paths:
+  - product/**
+  - docs/releases/**
+acceptance_items:
+  - R040-01 public installation and current-release documentation name v0.4.0
+  - R040-02 the package and CLI identify v0.4.0
+  - R040-03 the source-only pnpm boundary remains explicit in release material
+  - R040-04 native check, exact-candidate audit, complete review, and PR checks
+    pass
+  - R040-05 annotated tag, candidate, protected publication, readback, release,
+    and npm alpha/latest pointers all bind to the same preserved artifact
+validation_commands:
+  - npm run check
+  - node dist/cli.js --json --cwd . audit
+  - MILL_RELEASE_TAG=v0.4.0 node scripts/verify-release-tag.mjs
+required_reviews:
+  - read-only review of the complete committed Mill release-preparation diff
+constraints:
+  - single attended maintainer writer
+  - exact v0.4.0 environment-tag admission only; no wildcard or bypass
+  - preserve all historical tags, npm versions, releases, and evidence
+stop_conditions:
+  - ambiguous tag, tree, artifact, candidate-run, provenance, or provider effect
+  - unavailable independent verification or recurring P0/P1 release finding
+closure:
+  status: completed
+  owner: attended_maintainer_not_builder
+  recorded_at: 2026-09-14
+  release: v0.4.0
+  tag_commit: 9d21ec01d6ae45acaa4cfec10c9beeb5c5bb5c51
+  reviewed_candidate_tree: beaa61d3d9c187e2fa409017574d8088ea153812
+  candidate_run: 34859039023
+  publish_run: 34860005388
+  github_release_id: 388494901
+  npm_integrity: sha512-qFsFoj3a1jAU9xtUZhpyllfhohyuNoPCWc+HJZLZq7R5n+YD7hYOnJa+8yganunW+L1m6gt2AnsrtW8VAYqc0A==
+  disposition: >-
+    The annotated tag, two independent artifact builders, candidate and trusted
+    policy verification, protected OIDC publication, npm provenance/signature
+    verification, registry requalification, normal GitHub Release, and npm
+    alpha/latest pointers all resolve to the preserved v0.4.0 artifact. The
+    attended latest-channel promotion did not rebuild or republish the package.
+  evidence:
+    - docs/releases/v0.4.0.md
+    - https://github.com/davidahmann/mill/actions/runs/34859039023
+    - https://github.com/davidahmann/mill/actions/runs/34860005388
+    - https://github.com/davidahmann/mill/releases/tag/v0.4.0

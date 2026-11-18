@@ -1,0 +1,46 @@
+{
+  "payload": {
+    "request": {
+      "schemaVersion": "1",
+      "repositoryId": "e4a32f8b-fc84-43cf-b46f-5955d32f679c",
+      "runId": "3242eb91-61df-4346-901a-d4ee08bdd751",
+      "candidateCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "candidateTree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "taskDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "configDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "verifierId": "fixture",
+      "profileDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "claims": [
+        {
+          "kind": "acceptance",
+          "id": "AC-PORTABLE",
+          "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "producedAt": "2026-11-18T12:00:00Z",
+    "expiresAt": "2026-11-18T13:00:00Z",
+    "runtimeManifest": {
+      "🐍": "second implementation",
+      "豈": "sort by UTF-16",
+      "interpreter": "Python 3 and OpenSSL 3"
+    },
+    "claims": [
+      {
+        "kind": "acceptance",
+        "id": "AC-PORTABLE",
+        "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "status": "passed",
+        "report": "unicode"
+      }
+    ],
+    "reports": [
+      {
+        "name": "unicode",
+        "content": "Wheel installed ✓\nEscaped \"quotes\", \\ and emoji 🧪",
+        "digest": "sha256:86e4838815900be486cec6a61d47f98ce7f6da901072f568d21afedc301ca5ce"
+      }
+    ]
+  },
+  "signature": "Zy6eQuBhsRb+MLg6q6SM0ciGxTfwAnc0PD8E43b71Wm37NRV+w7VRcWUgE263FnQVR1eYqnxwD+YYbFqz8woDA=="
+}

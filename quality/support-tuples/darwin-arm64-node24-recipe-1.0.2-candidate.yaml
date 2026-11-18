@@ -1,0 +1,29 @@
+# Experimental CPU fixture only. Worker and forge versions identify the host tools.
+# No live Codex or GitHub delivery was exercised in the recipe canary.
+id: darwin-arm64-node24-codex-recipe-1-0-2
+status: experimental
+testedAt: "2026-11-18T22:05:34.362Z"
+expiresAt: "2026-12-18T22:05:34.362Z"
+host:
+  os: darwin
+  architecture: arm64
+runtime:
+  node: 24.20.0
+  npm: 11.19.0
+container:
+  engine: docker
+  version: 29.9.2
+  verifierImage: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+worker:
+  adapter: codex-cli
+  harnessVersion: 0.169.0-alpha.11.1
+  modelIdentity: provider-mutable
+  authMode: operator-session
+forge:
+  gitVersion: 2.50.0
+  ghVersion: 2.74.2
+  host: github.com
+recipe:
+  id: node-typescript-next-web
+  version: 1.0.2
+  digest: sha256:cdb6a5b3f7412d809b3be2f81f82e326a3cb8f7ef64448c76b192bf895a63a6f

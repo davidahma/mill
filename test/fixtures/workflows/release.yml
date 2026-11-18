@@ -1,0 +1,492 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description:
+          Build a qualified candidate or publish a previously qualified run
+        required: true
+        type: choice
+        options: [candidate, publish]
+      tag:
+        description: Existing annotated release tag
+        required: true
+        type: string
+      candidate_run_id:
+        description: Candidate workflow run ID required for publish mode
+        required: false
+        type: string
+      support_tuple_base64:
+        description: Base64 support-tuple JSON required for candidate mode
+        required: false
+        type: string
+      sequence_base64:
+        description:
+          Base64 longitudinal-sequence JSON required for candidate mode
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build-${{ matrix.builder }}
+    if: inputs.mode == 'candidate'
+    strategy:
+      fail-fast: false
+      matrix:
+        builder: [a, b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout immutable tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable release dispatch
+        id: verify-release-dispatch
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          normalized_ref=$(git check-ref-format --normalize "refs/tags/$RELEASE_TAG")
+          test "$normalized_ref" = "refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "$normalized_ref")" = tag
+          test "$(git rev-parse "${normalized_ref}^{commit}")" = "$(git rev-parse HEAD^{commit})"
+          notes_dir="docs/releases"
+          notes_file="${notes_dir}/${RELEASE_TAG}.md"
+          test -d docs && test ! -L docs && test -d "$notes_dir" && test ! -L "$notes_dir" && test -f "$notes_file" && test ! -L "$notes_file" && test -s "$notes_file"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Verify release identity
+        env:
+          MILL_RELEASE_TAG: ${{ inputs.tag }}
+        run: node scripts/verify-release-tag.mjs
+      - name: Full native gate
+        run: npm run check
+      - name: Build release tarball once
+        run: |
+          mkdir -p "$RUNNER_TEMP/builder-${{ matrix.builder }}"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/builder-${{ matrix.builder }}"
+      - name: Preserve independent artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: builder-${{ matrix.builder }}
+          path: ${{ runner.temp }}/builder-${{ matrix.builder }}/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  qualify:
+    name: qualify-candidate
+    if: inputs.mode == 'candidate'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout immutable tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable release dispatch
+        id: verify-release-dispatch
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          normalized_ref=$(git check-ref-format --normalize "refs/tags/$RELEASE_TAG")
+          test "$normalized_ref" = "refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "$normalized_ref")" = tag
+          test "$(git rev-parse "${normalized_ref}^{commit}")" = "$(git rev-parse HEAD^{commit})"
+          notes_dir="docs/releases"
+          notes_file="${notes_dir}/${RELEASE_TAG}.md"
+          test -d docs && test ! -L docs && test -d "$notes_dir" && test ! -L "$notes_dir" && test -f "$notes_file" && test ! -L "$notes_file" && test -s "$notes_file"
+      - name: Validate qualification inputs
+        id: validate-qualification-inputs
+        env:
+          SUPPORT_TUPLE_BASE64: ${{ inputs.support_tuple_base64 }}
+          SEQUENCE_BASE64: ${{ inputs.sequence_base64 }}
+        run: |
+          test -n "$SUPPORT_TUPLE_BASE64"
+          test -n "$SEQUENCE_BASE64"
+          node -e 'for(const name of ["SUPPORT_TUPLE_BASE64","SEQUENCE_BASE64"]){const decoded=Buffer.from(process.env[name],"base64").toString("utf8");const value=JSON.parse(decoded);if(typeof value!=="object"||value===null||Array.isArray(value))throw new Error(`${name} must decode to one JSON object`)}'
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Build release tools
+        run: npm run build
+      - name: Verify release identity
+        env:
+          MILL_RELEASE_TAG: ${{ inputs.tag }}
+        run: node scripts/verify-release-tag.mjs > "$RUNNER_TEMP/identity.json"
+      - name: Audit exact tag candidate
+        run: |
+          if ! node dist/cli.js --json --cwd . audit > "$RUNNER_TEMP/audit.json"; then
+            cat "$RUNNER_TEMP/audit.json"
+            exit 1
+          fi
+      - name: Download both independent artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: builder-*
+          path: ${{ runner.temp }}/builders
+      - name: Compare and preserve one artifact
+        run: |
+          artifact_a=$(find "$RUNNER_TEMP/builders/builder-a" -maxdepth 1 -type f -name '*.tgz')
+          artifact_b=$(find "$RUNNER_TEMP/builders/builder-b" -maxdepth 1 -type f -name '*.tgz')
+          test -n "$artifact_a" && test -n "$artifact_b"
+          node scripts/compare-release-artifacts.mjs "$artifact_a" "$artifact_b" "$RUNNER_TEMP/qualified"
+      - name: Pull the explicitly qualified verifier image
+        id: prepare-release-verifier
+        run: |
+          verifier_image=$(node -e 'const fs=require("node:fs"),y=require("yaml");const image=y.parse(fs.readFileSync("recipes/node-typescript-next-web/recipe.yaml","utf8")).verifierImage;if(typeof image!=="string"||!/@sha256:[a-f0-9]{64}$/.test(image))throw new Error("Digest-pinned verifier required");process.stdout.write(image)')
+          docker pull "$verifier_image"
+          docker image inspect "$verifier_image" >/dev/null
+      - name: Run packed greenfield and adoption canaries
+        run: |
+          artifact=$(find "$RUNNER_TEMP/qualified" -maxdepth 1 -type f -name '*.tgz')
+          cd "$RUNNER_TEMP"
+          node "$GITHUB_WORKSPACE/scripts/qualify-release-artifact.mjs" \
+            "$artifact" --full-canary \
+            --sbom-output "$RUNNER_TEMP/qualified/sbom.cdx.json" \
+            --report-output "$RUNNER_TEMP/qualified/release-canary.json"
+      - name: Add exact source evidence
+        run: |
+          cp "$RUNNER_TEMP/identity.json" "$RUNNER_TEMP/qualified/identity.json"
+          cp "$RUNNER_TEMP/audit.json" "$RUNNER_TEMP/qualified/audit.json"
+      - name: Assemble and validate public-alpha qualification
+        env:
+          SUPPORT_TUPLE_BASE64: ${{ inputs.support_tuple_base64 }}
+          SEQUENCE_BASE64: ${{ inputs.sequence_base64 }}
+        run: |
+          node -e 'require("node:fs").writeFileSync(process.argv[1],Buffer.from(process.env.SUPPORT_TUPLE_BASE64,"base64"),{flag:"wx",mode:0o600})' "$RUNNER_TEMP/support-tuple.json"
+          node -e 'require("node:fs").writeFileSync(process.argv[1],Buffer.from(process.env.SEQUENCE_BASE64,"base64"),{flag:"wx",mode:0o600})' "$RUNNER_TEMP/sequence.json"
+          qualification_input=.mill-release-qualification.json
+          test ! -e "$qualification_input"
+          trap 'rm -f "$qualification_input"' EXIT
+          node scripts/assemble-public-alpha-qualification.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/support-tuple.json" \
+            "$RUNNER_TEMP/sequence.json" \
+            "$RUNNER_TEMP/qualified/release-canary.json" \
+            "$RUNNER_TEMP/audit.json" \
+            "$qualification_input"
+          node dist/cli.js --json --cwd . qualify public-alpha \
+            --file "$qualification_input"
+          mv "$qualification_input" "$RUNNER_TEMP/qualified/qualification.json"
+          trap - EXIT
+      - name: Preserve qualified genesis candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: genesis-candidate-${{ inputs.tag }}
+          path: ${{ runner.temp }}/qualified/*
+          if-no-files-found: error
+          retention-days: 7
+
+  independent-policy:
+    name: independent-release-policy
+    if: inputs.mode == 'candidate'
+    needs: qualify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the separately pinned trusted verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: c547762d7644f62ac48011089564f5f46a48b786 # qualified v0.1.5 trust root
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify trusted source and genesis tag binding
+        run: |
+          test "$(git rev-parse HEAD)" = c547762d7644f62ac48011089564f5f46a48b786
+          test "$(git rev-parse 'v0.1.5^{commit}')" = c547762d7644f62ac48011089564f5f46a48b786
+          test "$(git cat-file -t v0.1.5)" = tag
+      - name: Set up the trusted verifier runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Build trusted tools from their own lock
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Download the exact candidate artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: genesis-candidate-${{ inputs.tag }}
+          path: ${{ runner.temp }}/qualified
+      - name: Assess qualification with trusted policy
+        run: |
+          cp "$RUNNER_TEMP/qualified/qualification.json" .mill-release-qualification.json
+          node dist/cli.js --json --cwd . qualify public-alpha --file .mill-release-qualification.json
+      - name: Prepare the explicitly pinned recipe verifier
+        id: prepare-release-verifier
+        run: |
+          verifier_image=$(node -e 'const fs=require("node:fs"),y=require("yaml");const image=y.parse(fs.readFileSync("recipes/node-typescript-next-web/recipe.yaml","utf8")).verifierImage;if(typeof image!=="string"||!/@sha256:[a-f0-9]{64}$/.test(image))throw new Error("Digest-pinned verifier required");process.stdout.write(image)')
+          docker pull "$verifier_image"
+          docker image inspect "$verifier_image" >/dev/null
+      - name:
+          Exercise the candidate using the previous release's independent canary
+        run: |
+          artifact=$(find "$RUNNER_TEMP/qualified" -maxdepth 1 -type f -name '*.tgz')
+          test -n "$artifact"
+          node scripts/qualify-release-artifact.mjs "$artifact" --full-canary --report-output "$RUNNER_TEMP/trusted-canary.json"
+          node -e 'const fs=require("node:fs"),crypto=require("node:crypto");const digest=p=>"sha256:"+crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");fs.writeFileSync(process.argv[3],JSON.stringify({schemaVersion:"1",verifierCommit:"c547762d7644f62ac48011089564f5f46a48b786",artifactDigest:digest(process.argv[1]),qualificationDigest:digest(process.argv[2])})+"\n",{flag:"wx"})' "$artifact" "$RUNNER_TEMP/qualified/qualification.json" "$RUNNER_TEMP/trusted-verifier.json"
+      - name: Preserve independent verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: independent-policy-${{ inputs.tag }}
+          path: |
+            ${{ runner.temp }}/trusted-verifier.json
+            ${{ runner.temp }}/trusted-canary.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish-qualified-artifact
+    if: inputs.mode == 'publish'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: npm
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout immutable tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable release dispatch
+        id: verify-release-dispatch
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          normalized_ref=$(git check-ref-format --normalize "refs/tags/$RELEASE_TAG")
+          test "$normalized_ref" = "refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "$normalized_ref")" = tag
+          test "$(git rev-parse "${normalized_ref}^{commit}")" = "$(git rev-parse HEAD^{commit})"
+          notes_dir="docs/releases"
+          notes_file="${notes_dir}/${RELEASE_TAG}.md"
+          test -d docs && test ! -L docs && test -d "$notes_dir" && test ! -L "$notes_dir" && test -f "$notes_file" && test ! -L "$notes_file" && test -s "$notes_file"
+      - name: Validate publish inputs
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]
+      - name: Set up Node and npm registry
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: Install without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Build release tools
+        run: npm run build
+      - name: Verify release identity
+        env:
+          MILL_RELEASE_TAG: ${{ inputs.tag }}
+        run: node scripts/verify-release-tag.mjs > "$RUNNER_TEMP/identity.json"
+      - name: Download the qualified candidate run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: genesis-candidate-${{ inputs.tag }}
+          path: ${{ runner.temp }}/qualified
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+      - name: Download independent verifier receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: independent-policy-${{ inputs.tag }}
+          path: ${{ runner.temp }}/trusted
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+      - name: Bind candidate run and independently verified artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID" > "$RUNNER_TEMP/candidate-run.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/jobs?per_page=100" > "$RUNNER_TEMP/candidate-jobs.json"
+          node scripts/verify-independent-release.mjs "$RUNNER_TEMP/qualified" "$RUNNER_TEMP/trusted/trusted-verifier.json" "$RUNNER_TEMP/candidate-run.json" "$RUNNER_TEMP/candidate-jobs.json" "$RUNNER_TEMP/identity.json"
+      - name: Bind candidate and publish workflow identities
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          node -e 'const fs=require("node:fs");const candidate=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/candidate-run.json","utf8"));const current={id:String(process.env.GITHUB_RUN_ID),url:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,headCommit:process.env.GITHUB_SHA};const bound={candidate:{id:String(candidate.id),url:candidate.html_url,headCommit:candidate.head_sha},publish:current};if(!/^[1-9][0-9]*$/.test(bound.candidate.id)||!/^[1-9][0-9]*$/.test(bound.publish.id)||typeof bound.candidate.url!=="string"||!/^[a-f0-9]{40}$/.test(bound.candidate.headCommit)||!/^[a-f0-9]{40}$/.test(bound.publish.headCommit))throw new Error("invalid workflow run identity");fs.writeFileSync(process.env.RUNNER_TEMP+"/workflow-runs.json",`${JSON.stringify(bound)}\n`,{flag:"wx",mode:0o600})'
+      - name: Verify preserved public-alpha qualification
+        run: |
+          qualification_input=.mill-release-qualification.json
+          test ! -e "$qualification_input"
+          node -e 'require("node:fs").copyFileSync(process.argv[1],process.argv[2],require("node:fs").constants.COPYFILE_EXCL)' \
+            "$RUNNER_TEMP/qualified/qualification.json" "$qualification_input"
+          trap 'rm -f "$qualification_input"' EXIT
+          node dist/cli.js --json --cwd . qualify public-alpha \
+            --file "$qualification_input"
+          rm -f "$qualification_input"
+          trap - EXIT
+      - name: Bind qualification and prepublication release evidence
+        run: |
+          node scripts/assemble-release-evidence.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/qualified/qualification.json" \
+          "$RUNNER_TEMP/qualified/sbom.cdx.json" \
+          "$RUNNER_TEMP/identity.json" \
+          "$RUNNER_TEMP/qualified/release-evidence-prepublication.json" \
+          - - "$RUNNER_TEMP/workflow-runs.json"
+      - name: Prepare the pinned verifier before immutable publication
+        id: prepare-release-verifier
+        run: |
+          verifier_image=$(node -e 'const fs=require("node:fs"),y=require("yaml");const image=y.parse(fs.readFileSync("recipes/node-typescript-next-web/recipe.yaml","utf8")).verifierImage;if(typeof image!=="string"||!/@sha256:[a-f0-9]{64}$/.test(image))throw new Error("Digest-pinned verifier required");process.stdout.write(image)')
+          docker pull "$verifier_image"
+          docker image inspect "$verifier_image" >/dev/null
+      - name: Publish the exact preserved artifact with provenance
+        run: |
+          artifact=$(find "$RUNNER_TEMP/qualified" -maxdepth 1 -type f -name '*.tgz')
+          test -n "$artifact"
+          npm publish "$artifact" --provenance --access public --tag latest
+      - name: Read back npm and verify signatures
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          node scripts/retry-npm-metadata.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/registry-dist.json" \
+            "$RUNNER_TEMP/npm-observation-initial.json"
+          mkdir -p "$RUNNER_TEMP/registry-install"
+          cd "$RUNNER_TEMP/registry-install"
+          npm init --yes >/dev/null
+          node "$GITHUB_WORKSPACE/scripts/retry-npm-install.mjs" \
+            "$RUNNER_TEMP/registry-install" "@davidahmann/mill@$version"
+          node "$GITHUB_WORKSPACE/scripts/retry-npm-signatures.mjs" "$RUNNER_TEMP/registry-install"
+      - name: Requalify the registry-downloaded package
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          mkdir -p "$RUNNER_TEMP/registry-download"
+          npm pack "@davidahmann/mill@$version" --pack-destination "$RUNNER_TEMP/registry-download" >/dev/null
+          registry_artifact=$(find "$RUNNER_TEMP/registry-download" -maxdepth 1 -type f -name '*.tgz')
+          cd "$RUNNER_TEMP"
+          node "$GITHUB_WORKSPACE/scripts/qualify-release-artifact.mjs" "$registry_artifact" --full-canary
+      - name: Create draft GitHub Release with exact artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          artifact=$(find "$RUNNER_TEMP/qualified" -maxdepth 1 -type f -name '*.tgz')
+          checksum=$(find "$RUNNER_TEMP/qualified" -maxdepth 1 -type f -name '*.sha256')
+          notes_file="docs/releases/${RELEASE_TAG}.md"
+          test -f "$notes_file"
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Mill $RELEASE_TAG (Public alpha)" \
+            --notes-file "$notes_file" \
+            "$artifact" "$checksum" \
+            "$RUNNER_TEMP/qualified/sbom.cdx.json" \
+            "$RUNNER_TEMP/qualified/release-evidence-prepublication.json" \
+            "$RUNNER_TEMP/qualified/qualification.json" \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/qualified/audit.json" \
+            "$RUNNER_TEMP/qualified/identity.json" \
+            "$RUNNER_TEMP/qualified/release-canary.json" \
+            "$RUNNER_TEMP/trusted/trusted-verifier.json" \
+            "$RUNNER_TEMP/trusted/trusted-canary.json"
+      - name: Read back draft GitHub Release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          artifact=$(find "$RUNNER_TEMP/qualified" -maxdepth 1 -type f -name '*.tgz')
+          filename=$(basename "$artifact")
+          mkdir -p "$RUNNER_TEMP/github-download"
+          gh release view "$RELEASE_TAG" --json url,tagName,isDraft,isPrerelease,publishedAt,databaseId,assets > "$RUNNER_TEMP/github-release.json"
+          node -e 'const fs=require("node:fs");const file=process.argv[1];const release=JSON.parse(fs.readFileSync(file,"utf8"));release.url=`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/releases/tag/${encodeURIComponent(process.env.RELEASE_TAG)}`;fs.writeFileSync(file,`${JSON.stringify(release)}\n`,{flag:"w",mode:0o600})' "$RUNNER_TEMP/github-release.json"
+          gh release download "$RELEASE_TAG" --pattern "$filename" --dir "$RUNNER_TEMP/github-download"
+          node scripts/capture-release-readback.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/registry-dist.json" \
+            "$RUNNER_TEMP/github-release.json" \
+            "$RUNNER_TEMP/github-download/$filename" \
+            "$RUNNER_TEMP/registry-readback.json" \
+            "$RUNNER_TEMP/github-readback.json"
+          node scripts/assemble-release-evidence.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/qualified/qualification.json" \
+            "$RUNNER_TEMP/qualified/sbom.cdx.json" \
+            "$RUNNER_TEMP/identity.json" \
+            "$RUNNER_TEMP/release-evidence-draft.json" \
+            "$RUNNER_TEMP/registry-readback.json" \
+            "$RUNNER_TEMP/github-readback.json" \
+            "$RUNNER_TEMP/workflow-runs.json"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release-evidence-draft.json"
+      - name: Publish GitHub Release after draft evidence readback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Read back published GitHub Release and attach final evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          artifact=$(find "$RUNNER_TEMP/qualified" -maxdepth 1 -type f -name '*.tgz')
+          filename=$(basename "$artifact")
+          rm -rf "$RUNNER_TEMP/github-download"
+          mkdir -p "$RUNNER_TEMP/github-download"
+          node scripts/retry-npm-metadata.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/registry-dist-final.json" \
+            "$RUNNER_TEMP/npm-observation-final.json"
+          gh release view "$RELEASE_TAG" --json url,tagName,isDraft,isPrerelease,publishedAt,databaseId,assets > "$RUNNER_TEMP/github-release-published.json"
+          node -e 'const fs=require("node:fs");const file=process.argv[1];const release=JSON.parse(fs.readFileSync(file,"utf8"));release.url=`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/releases/tag/${encodeURIComponent(process.env.RELEASE_TAG)}`;fs.writeFileSync(file,`${JSON.stringify(release)}\n`,{flag:"w",mode:0o600})' "$RUNNER_TEMP/github-release-published.json"
+          gh release download "$RELEASE_TAG" --pattern "$filename" --dir "$RUNNER_TEMP/github-download"
+          node scripts/capture-release-readback.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/registry-dist-final.json" \
+            "$RUNNER_TEMP/github-release-published.json" \
+            "$RUNNER_TEMP/github-download/$filename" \
+            "$RUNNER_TEMP/registry-readback-published.json" \
+            "$RUNNER_TEMP/github-readback-published.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/github-latest.json"
+          node scripts/capture-release-channels.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/npm-observation-final.json" \
+            "$RUNNER_TEMP/github-latest.json" \
+            "$RUNNER_TEMP/github-readback-published.json" \
+            "$RUNNER_TEMP/release-channels.json"
+          node scripts/assemble-release-evidence.mjs \
+            "$RUNNER_TEMP/qualified/artifact-metadata.json" \
+            "$RUNNER_TEMP/qualified/qualification.json" \
+            "$RUNNER_TEMP/qualified/sbom.cdx.json" \
+            "$RUNNER_TEMP/identity.json" \
+            "$RUNNER_TEMP/release-evidence-final.json" \
+            "$RUNNER_TEMP/registry-readback-published.json" \
+            "$RUNNER_TEMP/github-readback-published.json" \
+            "$RUNNER_TEMP/workflow-runs.json" \
+            "$RUNNER_TEMP/release-channels.json"
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release-evidence-final.json"

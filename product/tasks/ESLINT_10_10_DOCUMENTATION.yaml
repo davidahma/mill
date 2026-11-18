@@ -1,0 +1,65 @@
+schemaVersion: "2"
+task_id: mill-eslint-10.10-documentation
+status: closed
+owner: davidahmann
+base_commit: 325fff12e2c598456711d26177de74c9971b5313
+execution_mode: approved_native_maintainer
+authority: product/eslint-10.10-maintenance.md
+impact_manifest: product/impacts/ESLINT_10_10_DOCUMENTATION.yaml
+objective: >-
+  Apply Dependabot PR #33's ESLint 10.10.0 development update on current main
+  and correct live documentation to identify v0.3.1 as the current alpha.
+allowed_paths:
+  - package.json
+  - package-lock.json
+  - README.md
+  - product/PLAN.md
+  - docs/release.md
+  - docs/repository-settings.md
+  - docs/releases/v0.3.1.md
+  - product/eslint-10.10-maintenance.md
+  - product/impacts/ESLINT_10_10_DOCUMENTATION.yaml
+  - product/tasks/ESLINT_10_10_DOCUMENTATION.yaml
+  - product/tasks/RELEASE_V0_3_1.yaml
+acceptance_items:
+  - ESLINT1010-01 package manifest and lockfile resolve direct ESLint 10.10.0
+  - ESLINT1010-02 live current-release documentation names v0.3.1 and its
+    alpha/latest pointers without changing historical evidence
+  - ESLINT1010-03 native check, exact-candidate audit, full review, and PR
+    checks pass with a maintainer DCO sign-off
+validation_commands:
+  - npm run check
+  - node dist/cli.js --json --cwd . audit
+required_reviews:
+  - read-only local Codex review of the complete committed PR diff
+constraints:
+  - single attended maintainer writer
+  - preserve released v0.3.1 artifact, tags, npm versions, provenance, and
+    provider evidence
+  - no tag, publication, npm channel, GitHub Release, environment-policy, or
+    branch-protection mutation
+stop_conditions:
+  - ambiguous authority, dependency resolution, or provider effect
+  - unavailable native verification or exact-candidate review
+  - recurring P0 or P1 finding in the dependency or documentation change
+closure:
+  status: completed
+  owner: attended_maintainer_not_builder
+  recorded_at: 2026-09-08
+  pull_request: https://github.com/davidahmann/mill/pull/34
+  candidate_commit: 3741fd3d40f180a04efe1c3bd2725be73adc00df
+  candidate_tree: b3a13aa8cc152f52bec4c1f55e8831c6892d4a38
+  merge_commit: a98db3ebf8aa95aeaa3b5cb3b53812c6309230d5
+  disposition: >-
+    The maintainer-DCO-signed candidate reconstructed PR #33's ESLint 10.10.0
+    dependency resolution exactly, updated only live v0.3.1 documentation, and
+    passed native validation, audit, PR checks, and resulting-main CI/CodeQL.
+    The resulting-main tree matches the reviewed candidate tree. Dependabot PR
+    #33 was closed after the replacement merged; no release or package effect
+    occurred.
+  evidence:
+    - https://github.com/davidahmann/mill/pull/34
+    - https://github.com/davidahmann/mill/actions/runs/34273946647
+    - https://github.com/davidahmann/mill/actions/runs/34273946688
+    - https://github.com/davidahmann/mill/actions/runs/34274284147
+    - https://github.com/davidahmann/mill/actions/runs/34274284077

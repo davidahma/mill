@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "repositoryId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "runId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "candidateCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "candidateTree": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "taskDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "configDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "verifierId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "profileDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "claims": {
+      "minItems": 1,
+      "maxItems": 512,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["acceptance", "invariant", "scenario"]
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          },
+          "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        },
+        "required": ["kind", "id", "digest"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repositoryId",
+    "runId",
+    "candidateCommit",
+    "candidateTree",
+    "taskDigest",
+    "configDigest",
+    "verifierId",
+    "profileDigest",
+    "claims"
+  ],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/external-verification-request.schema.json",
+  "title": "ExternalVerificationRequest"
+}

@@ -1,0 +1,473 @@
+import { execFile } from "node:child_process";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { trackFakeDocker } from "./fake-oci.js";
+import { promisify } from "node:util";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+
+import { canonicalDigest, type JsonValue } from "../src/contracts/canonical.js";
+import {
+  loadRuntimeInputs,
+  textDigest,
+  type RuntimeInputs,
+} from "../src/runtime/inputs.js";
+import { temporaryDirectory } from "./helpers.js";
+
+const execFileAsync = promisify(execFile);
+const gitExecutable = process.env.MILL_GIT_PATH ?? "/usr/bin/git";
+
+/** Rebind all authority digests so admission tests exercise semantics, not stale bytes. */
+export async function rewriteFixtureAuthority(
+  fixture: Awaited<ReturnType<typeof runtimeFixture>>,
+  update: (continuity: NonNullable<RuntimeInputs["continuity"]>) => void,
+) {
+  const inputs = await loadRuntimeInputs(fixture.root, fixture.taskPath);
+  if (inputs.task.schemaVersion !== "2" || inputs.continuity === undefined)
+    throw new Error("expected continuity fixture");
+  const { task, continuity } = inputs;
+  update(continuity);
+  const productDigest = canonicalDigest(continuity.product as JsonValue);
+  continuity.scenarios.productContractDigest = productDigest;
+  continuity.impact.productContractDigest = productDigest;
+  if (continuity.impact.approval === null)
+    throw new Error("expected approved impact fixture");
+  continuity.impact.approval.proposalDigest = canonicalDigest({
+    ...continuity.impact,
+    approval: null,
+  });
+  for (const [reference, value] of [
+    [task.authority.productContract, continuity.product],
+    [task.authority.scenarioSet, continuity.scenarios],
+    [task.authority.impactManifest, continuity.impact],
+  ] as const) {
+    const source = stringifyYaml(value);
+    reference.digest = textDigest(source);
+    await writeFile(path.join(fixture.root, reference.path), source);
+  }
+  await writeFile(
+    path.join(fixture.root, fixture.taskPath),
+    stringifyYaml(task),
+  );
+  fixture.taskDigest = canonicalDigest(task as JsonValue);
+  return { task, continuity };
+}
+
+async function git(root: string, args: readonly string[]): Promise<string> {
+  const result = await execFileAsync(
+    gitExecutable,
+    [
+      "-c",
+      "user.name=Mill Test",
+      "-c",
+      "user.email=mill-test@example.invalid",
+      ...args,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+  return result.stdout;
+}
+
+export async function runtimeFixture(
+  options: {
+    reviewRepair?: boolean;
+    advisoryReview?: boolean;
+    reviewBlocking?: "p0_p1";
+    twoReviewRepairs?: boolean;
+    retryCount?: number;
+    repositoryPrefix?: string;
+    propose?: boolean;
+    attendedMerge?: boolean;
+    impactExpiresAt?: string;
+    nativeRepair?: boolean;
+    pythonExecutionFailure?: "preflight" | "signal" | "missing" | "mismatched";
+    githubReviewer?: string;
+    githubReviewMode?: "github_required" | "github_codex_required";
+    reviewerCacheInputTokens?: number;
+    maxModelTokens?: number;
+    builderUsageUnavailable?: boolean;
+  } = {},
+): Promise<{
+  root: string;
+  stateHome: string;
+  taskPath: string;
+  taskDigest: string;
+  codexPath: string;
+  dockerPath: string;
+  cleanup(): Promise<void>;
+}> {
+  const repository = await temporaryDirectory(
+    options.repositoryPrefix ?? "mill-runtime-repo-",
+  );
+  const state = await temporaryDirectory("mill-runtime-state-");
+  const tools = await temporaryDirectory("mill-runtime-tools-");
+  const root = repository.path;
+  const prd = "# Fixture PRD\n\nKeep the exported value positive.\n";
+  await Promise.all([
+    writeFile(path.join(root, ".gitignore"), "ignored-output\n"),
+    mkdir(path.join(root, "product", "tasks"), { recursive: true }),
+    mkdir(path.join(root, "quality"), { recursive: true }),
+    mkdir(path.join(root, "src"), { recursive: true }),
+    mkdir(path.join(root, "test"), { recursive: true }),
+  ]);
+  const product = `schemaVersion: "1"
+id: fixture
+title: Fixture
+primaryUser: Test operator
+jobToBeDone: Produce one exact positive-value candidate.
+outcomes:
+  - id: OUT-POSITIVE-VALUE
+    statement: The exported value is positive.
+nonGoals: []
+assumptions: []
+unknowns: []
+sourceRefs: [SRC-PRD]
+acceptance:
+  - id: ACC-POSITIVE
+    kind: functional
+    statement: The exported value is greater than one and the native test passes.
+    sourceRefs: [SRC-PRD]
+invariants:
+  - id: INV-POSITIVE
+    statement: The exported value remains positive.
+    owner: repository
+    criticality: high
+    surfaceRefs: [src/value.js]
+    verification:
+      mode: command
+      ref: test
+    sourceRefs: [SRC-PRD]
+    unknowns: []
+decisions: []
+`;
+  const parsedProduct: unknown = parseYaml(product);
+  const productDigest = canonicalDigest(parsedProduct as JsonValue);
+  const scenarios = `schemaVersion: "1"
+productContractDigest: "${productDigest}"
+scenarios:
+  - id: SCN-POSITIVE
+    kind: normal
+    given: [an approved positive-value task]
+    when: [the native test runs]
+    then: [the exported value remains positive]
+    oracleOwner: repository
+    acceptanceRefs: [ACC-POSITIVE]
+    invariantRefs: [INV-POSITIVE]
+    coverage: both
+    visibility: builder_visible
+    executionRef: test
+    forbidden: []
+`;
+  const impactProposal = {
+    schemaVersion: "1",
+    id: "positive-value",
+    productContractDigest: productDigest,
+    outcomeId: "OUT-POSITIVE-VALUE",
+    riskClass: "low",
+    acceptanceIds: ["ACC-POSITIVE"],
+    affectedInvariantIds: ["INV-POSITIVE"],
+    uncertainInvariantIds: [],
+    surfaces: [
+      { id: "src/value.js", kind: "system", change: "Increase the value." },
+    ],
+    scenarioIds: ["SCN-POSITIVE"],
+    commandIds: ["test"],
+    materialDecisions: [],
+    unresolved: [],
+    exceptions:
+      options.impactExpiresAt === undefined
+        ? []
+        : [
+            {
+              id: "temporary-authority",
+              scopeRefs: ["INV-POSITIVE"],
+              reason: "Test bounded authority",
+              approvedBy: "mill-test",
+              approvedAt: "2026-09-02T00:00:00.000Z",
+              expiresAt: options.impactExpiresAt,
+            },
+          ],
+    approval: null,
+  } as const;
+  const impact = stringifyYaml({
+    ...impactProposal,
+    approval: {
+      approvedBy: "mill-test",
+      approvedAt: "2026-09-02T00:00:00.000Z",
+      proposalDigest: canonicalDigest(impactProposal),
+    },
+  });
+  const policy = "# Fixture policy\n\nOnly src/value.js may change.\n";
+  await Promise.all([
+    writeFile(path.join(root, "product", "PRD.md"), prd),
+    writeFile(
+      path.join(root, "product", "sources.yaml"),
+      stringifyYaml({
+        schemaVersion: "1",
+        trigger: "bootstrap",
+        providers: [
+          {
+            id: "operator",
+            name: "Test operator",
+            queries: [],
+            networkDisclosure: "No network access",
+          },
+        ],
+        sources: [
+          {
+            id: "SRC-PRD",
+            class: "user_evidence",
+            uri: "product/PRD.md",
+            revision: textDigest(prd),
+            digest: textDigest(prd),
+            observedAt: "2026-09-02T00:00:00.000Z",
+            freshness: "current",
+            authority: "constraint",
+            claims: ["The exported value remains positive."],
+          },
+        ],
+      }),
+    ),
+    writeFile(path.join(root, "product", "contract.yaml"), product),
+    writeFile(path.join(root, "product", "impact.yaml"), impact),
+    writeFile(path.join(root, "quality", "scenarios.yaml"), scenarios),
+    writeFile(path.join(root, "WORKFLOW.md"), policy),
+    writeFile(path.join(root, "src", "value.js"), "export const value = 1;\n"),
+    writeFile(
+      path.join(root, "test", "value.test.js"),
+      'import assert from "node:assert/strict";\nimport test from "node:test";\nimport { value } from "../src/value.js";\ntest("value stays positive", () => assert.ok(value > 0));\n',
+    ),
+  ]);
+  const reviewMode =
+    options.githubReviewer === undefined
+      ? "local_only"
+      : (options.githubReviewMode ?? "github_required");
+  const reviewers =
+    options.githubReviewer === undefined
+      ? "[]"
+      : JSON.stringify([options.githubReviewer]);
+  const proposalConfiguration =
+    options.propose === true
+      ? `propose:
+  forge: github
+  host: github.com
+  owner: example
+  repository: app
+  repositoryNodeId: R_example
+  remoteName: origin
+  baseBranch: main
+  branchPrefix: mill/
+  allowedActors: [operator]
+  allowedMergerLogins: [operator]
+  requiredChecks: [validate]
+  ${options.attendedMerge === true ? "attendedMerge: true\n  checkProducers:\n    validate: { appId: 15368, workflowPath: .github/workflows/ci.yml, pullRequestEvent: pull_request, postMergeEvent: push }" : ""}
+  reviewPolicy:
+    mode: ${reviewMode}
+    requiredReviewerLogins: ${reviewers}
+  allowedMergeMethods: [linear_tree_preserving]
+  approvalTtlSeconds: 900
+  pollTimeoutSeconds: 30
+`
+      : "";
+  await writeFile(
+    path.join(root, "mill.yaml"),
+    `schemaVersion: "1"
+repositoryId: "11111111-1111-4111-8111-111111111111"
+trustCeiling: ${options.propose === true ? "propose" : "build"}
+${options.reviewBlocking === undefined ? "" : "review: { blocking: p0_p1 }"}
+sensitivePaths:
+  - .env
+verifier:
+  image: "node@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e"
+  network: none
+${proposalConfiguration}commands:
+  test:
+    argv: ["node", "--test"]
+    cwd: "."
+    controlPaths:
+      - test/value.test.js
+    capability: test
+    required: true
+    timeoutSeconds: 30
+    execution: oci
+`,
+  );
+  const taskPath = "product/tasks/manual.yaml";
+  await writeFile(
+    path.join(root, taskPath),
+    `schemaVersion: "2"
+id: positive-value
+title: Keep the exported value positive
+objective: Change src/value.js to export a positive value greater than one.
+riskClass: low
+baseRef: HEAD
+authority:
+  productContract:
+    path: product/contract.yaml
+    digest: "${textDigest(product)}"
+  scenarioSet:
+    path: quality/scenarios.yaml
+    digest: "${textDigest(scenarios)}"
+  policy:
+    path: WORKFLOW.md
+    digest: "${textDigest(policy)}"
+  impactManifest:
+    path: product/impact.yaml
+    digest: "${textDigest(impact)}"
+contextPaths:
+  - WORKFLOW.md
+  - test/value.test.js
+allowedPaths:
+  - src/value.js
+commandIds:
+  - test
+acceptance:
+  - id: ACC-POSITIVE
+    statement: The exported value is greater than one and the native test passes.
+    invariantIds: [INV-POSITIVE]
+    scenarioIds: [SCN-POSITIVE]
+    coverage: both
+    evidence:
+      mode: command
+      commandId: test
+commit:
+  message: "feat: increase fixture value"
+  authorName: "Mill Test"
+  authorEmail: "mill-test@example.invalid"
+budget:
+  deadlineSeconds: 60
+  maxOutputBytes: 1048576
+${options.maxModelTokens === undefined ? "" : `  maxModelTokens: ${options.maxModelTokens}\n`}  retryCount: ${options.retryCount ?? 1}
+${
+  options.twoReviewRepairs === true
+    ? `repairExperiment:
+  scope: fixture_only
+  maximumRepairGenerations: 2
+  evidenceLabel: two-review-repair-fixture
+`
+    : ""
+}
+`,
+  );
+  await git(root, ["init", "--initial-branch=main"]);
+  await git(root, [
+    "remote",
+    "add",
+    "origin",
+    "https://github.com/example/app.git",
+  ]);
+  await git(root, ["add", "."]);
+  await git(root, [
+    "commit",
+    "--no-gpg-sign",
+    "-m",
+    "test: seed runtime fixture",
+  ]);
+
+  const codexPath = path.join(tools.path, "codex");
+  const reviewer =
+    options.reviewRepair === true
+      ? `const source=await readFile(path.join(cwd,"src/value.js"),"utf8");
+const findings=${options.twoReviewRepairs === true ? 'source.includes("value = 2")||source.includes("value = 3")' : 'source.includes("value = 2")'}?[{id:"R1",severity:"P1",class:"correctness",title:"Use the repaired value",body:"Set the value to the next approved value.",file:"src/value.js",line:1}]:[];`
+      : options.advisoryReview === true
+        ? 'const findings=[{id:"A1",severity:"P2",class:"maintainability",title:"Optional improvement",body:"PRIVATE-REVIEW-SENTINEL /private/customer/secret.txt",file:"src/value.js",line:1}];'
+        : "const findings=[];";
+  const reviewerUsage =
+    options.reviewerCacheInputTokens === undefined
+      ? "input_tokens:10,output_tokens:5"
+      : `input_tokens:10,output_tokens:5,cached_input_tokens:${options.reviewerCacheInputTokens}`;
+  await writeFile(
+    codexPath,
+    `#!${process.execPath}
+import {readFile,writeFile} from "node:fs/promises";
+import path from "node:path";
+import {execFileSync} from "node:child_process";
+const args=process.argv.slice(2);
+if(args[0]==="--version"){console.log("codex-cli fixture-1");process.exit(0)}
+if(args[0]==="login"){console.log("Logged in using ChatGPT");process.exit(0)}
+if(args.includes("--approve-for-me")){console.error("automatic escalation approval is forbidden");process.exit(2)}
+if(!args.some((value,index)=>value==="-c"&&args[index+1]==='approval_policy="never"')){console.error("approval policy must fail closed");process.exit(2)}
+if(!args.some((value,index)=>value==="--disable"&&args[index+1]==="skill_search")){console.error("host skill search not disabled");process.exit(2)}
+if(!args.includes("--ignore-rules")){console.error("ambient execution rules not disabled");process.exit(2)}
+const sandboxIndex=args.indexOf("--sandbox");
+const expectedSandbox=args.includes("--output-schema")?"read-only":"workspace-write";
+if(sandboxIndex<0||args[sandboxIndex+1]!==expectedSandbox){console.error("unexpected sandbox scope");process.exit(2)}
+const index=args.indexOf("--cd");
+const cwd=index>=0?args[index+1]:process.cwd();
+let prompt="";for await(const chunk of process.stdin){prompt+=chunk}
+if(args.includes("--output-schema")){
+  const candidate=execFileSync(${JSON.stringify(gitExecutable)},["rev-parse","HEAD"],{cwd,encoding:"utf8"}).trim();
+  ${reviewer}
+  const scope=JSON.parse(prompt.split("Review scope JSON: ")[1]?.split("\\n")[0]??"null");
+  const text=JSON.stringify({schemaVersion:"1",candidateCommit:candidate,...(scope===null?{}:{scope}),summary:findings.length?"repair required":"clean",findings});
+  const outputIndex=args.indexOf("--output-last-message");
+  if(outputIndex<0||!args[outputIndex+1])process.exit(2);
+  await writeFile(args[outputIndex+1],text,{mode:0o600});
+  console.log(JSON.stringify({type:"thread.started",thread_id:"fake-review"}));
+  console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text}}));
+  console.log(JSON.stringify({type:"turn.completed",usage:{${reviewerUsage}}}));
+}else{
+  const source=await readFile(path.join(cwd,"src/value.js"),"utf8");
+  const current=Number(/value = (\\d+)/.exec(source)?.[1]??"1");
+  const value=prompt.includes("Repair this complete")?current+1:2;
+  await writeFile(path.join(cwd,"src/value.js"),\`export const value = \${value};\\n\`);
+  console.log(JSON.stringify({type:"thread.started",thread_id:"fake-build"}));
+  console.log(JSON.stringify({type:"turn.completed"${options.builderUsageUnavailable === true ? "" : ",usage:{input_tokens:10,output_tokens:5}"}}));
+}
+`,
+    { mode: 0o755 },
+  );
+  await chmod(codexPath, 0o755);
+
+  const dockerPath = path.join(tools.path, "docker");
+  await writeFile(
+    dockerPath,
+    `#!${process.execPath}
+import {readFile} from "node:fs/promises";
+import path from "node:path";
+const args=process.argv.slice(2);
+if(args[0]==="--version"){console.log("Docker version 29.7.2");process.exit(0)}
+if(args[0]==="image"&&args[1]==="inspect"){console.log("[]");process.exit(0)}
+if(args[0]==="rm"){process.exit(0)}
+const mounts=args.filter((value)=>value.startsWith("type="));
+const sourceMount=mounts.find((value)=>value.includes("target=/workspace/src,readonly"))??"";
+const source=/source=([^,]+)/u.exec(sourceMount)?.[1];
+if(!source)process.exit(2);
+const value=await readFile(path.join(source,"value.js"),"utf8");
+const passed=/value = [1-9]/u.test(value)&&!(${options.nativeRepair === true}&&/value = 2/u.test(value));
+if(args.includes("--interactive")){
+  let proof="";for await(const chunk of process.stdin)proof+=chunk;
+  const marker=proof.trim();
+  if(!/^mill-python-command:[a-f0-9-]+$/u.test(marker))process.exit(2);
+  const failure=/value = 2/u.test(value)?${JSON.stringify(options.pythonExecutionFailure ?? null)}:null;
+  if(failure==="preflight"){process.stderr.write("Python image profile mismatch");process.exit(1)}
+  process.stderr.write("\\n"+marker+":started\\n");
+  if(failure==="signal")process.exit(137);
+  if(failure==="missing")process.exit(0);
+  process.stderr.write("\\n"+marker+":exit:"+(failure==="mismatched"?2:passed?0:1)+"\\n");
+  if(failure==="mismatched")process.exit(1);
+}
+const marker=args.find((entry)=>entry.startsWith("MILL_ARTIFACT_PROTOCOL="))?.slice("MILL_ARTIFACT_PROTOCOL=".length);
+if(marker!==undefined){const contents='{"baseline":true}\\n';process.stdout.write(\`\\n\${marker}:begin\\nregular:\${Buffer.byteLength(contents)}\\n\${Buffer.from(contents).toString("base64")}\\n\${marker}:end:\${passed?0:1}\\n\`)}
+process.exit(/value = [1-9]/u.test(value)&&!(${options.nativeRepair === true}&&/value = 2/u.test(value))?0:1);
+`,
+    { mode: 0o755 },
+  );
+  await chmod(dockerPath, 0o755);
+  await trackFakeDocker(dockerPath);
+  const taskDigest = (await loadRuntimeInputs(root, taskPath)).taskDigest;
+  return {
+    root,
+    stateHome: state.path,
+    taskPath,
+    taskDigest,
+    codexPath,
+    dockerPath,
+    async cleanup(): Promise<void> {
+      await Promise.all([
+        repository.cleanup(),
+        state.cleanup(),
+        tools.cleanup(),
+      ]);
+    },
+  };
+}

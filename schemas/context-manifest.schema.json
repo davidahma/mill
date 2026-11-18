@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "playbooks": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^*?[\\]\\\\]+$"
+            },
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+          },
+          "required": ["path", "digest"],
+          "additionalProperties": false
+        },
+        "selected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+              "kind": {
+                "type": "string",
+                "enum": ["shared_migration_knowledge", "repository_procedure"]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^*?[\\]\\\\]+$"
+              },
+              "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+            },
+            "required": ["id", "kind", "path", "digest"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["index", "selected"],
+      "additionalProperties": false
+    },
+    "repositoryContext": {
+      "type": "object",
+      "properties": {
+        "authority": { "type": "string", "const": "derived_read_only" },
+        "sourceCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "mapDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "extractorVersion": { "type": "string", "minLength": 1 },
+        "modules": {
+          "maxItems": 24,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "digest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "localImports": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "unresolvedImports": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": ["path", "digest", "localImports", "unresolvedImports"],
+            "additionalProperties": false
+          }
+        },
+        "omittedModules": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "unknowns": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": [
+        "authority",
+        "sourceCommit",
+        "mapDigest",
+        "extractorVersion",
+        "modules",
+        "omittedModules",
+        "unknowns"
+      ],
+      "additionalProperties": false
+    },
+    "taskDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "baseCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "provider": { "type": "string", "const": "openai" },
+    "adapter": { "type": "string", "const": "codex-cli" },
+    "authOwner": { "type": "string", "const": "operator" },
+    "isolation": { "type": "string", "const": "attended-trusted-host" },
+    "modelIdentity": { "type": "string", "const": "provider-mutable" },
+    "included": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        },
+        "required": ["path", "digest"],
+        "additionalProperties": false
+      }
+    },
+    "excludedPatterns": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "disclosure": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "contextEpoch": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "effectiveInstructions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        },
+        "required": ["path", "digest"],
+        "additionalProperties": false
+      }
+    },
+    "providerVisibleScope": {
+      "type": "object",
+      "properties": {
+        "repositoryScope": { "type": "string", "const": "worktree" },
+        "suppliedPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "writablePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^*?[\\]\\\\]+(?:\\/\\*\\*)?$"
+          }
+        },
+        "observedReads": { "type": "string", "const": "unavailable" }
+      },
+      "required": [
+        "repositoryScope",
+        "suppliedPaths",
+        "writablePatterns",
+        "observedReads"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "taskDigest",
+    "baseCommit",
+    "provider",
+    "adapter",
+    "authOwner",
+    "isolation",
+    "modelIdentity",
+    "included",
+    "excludedPatterns",
+    "disclosure"
+  ],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/context-manifest.schema.json",
+  "title": "ContextManifest"
+}

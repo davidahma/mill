@@ -1,0 +1,1024 @@
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  createGitHubAdapter,
+  type ProposeConfig,
+} from "../src/runtime/github.js";
+import { temporaryDirectory } from "./helpers.js";
+import { actionableFeedback } from "../src/runtime/delivery.js";
+
+const originalGh = process.env.MILL_GH_PATH;
+const originalGit = process.env.MILL_GIT_PATH;
+const originalToken = process.env.MILL_GITHUB_TOKEN;
+
+afterEach(() => {
+  if (originalGh === undefined) delete process.env.MILL_GH_PATH;
+  else process.env.MILL_GH_PATH = originalGh;
+  if (originalGit === undefined) delete process.env.MILL_GIT_PATH;
+  else process.env.MILL_GIT_PATH = originalGit;
+  if (originalToken === undefined) delete process.env.MILL_GITHUB_TOKEN;
+  else process.env.MILL_GITHUB_TOKEN = originalToken;
+});
+
+const sha = "a".repeat(40);
+const config: ProposeConfig = {
+  forge: "github",
+  host: "github.com",
+  owner: "example",
+  repository: "app",
+  repositoryNodeId: "R_example",
+  remoteName: "origin",
+  baseBranch: "main",
+  branchPrefix: "mill/",
+  allowedActors: ["operator"],
+  allowedMergerLogins: ["operator"],
+  requiredChecks: ["validate"],
+  reviewPolicy: {
+    mode: "github_codex_required",
+    requiredReviewerLogins: ["chatgpt-codex-connector[bot]"],
+  },
+  allowedMergeMethods: ["linear_tree_preserving"],
+  approvalTtlSeconds: 900,
+  pollTimeoutSeconds: 30,
+};
+
+async function githubFixture() {
+  const repository = await temporaryDirectory("mill-github-repository-");
+  const tools = await temporaryDirectory("mill-github-tools-");
+  const gh = path.join(tools.path, "gh");
+  const completedSummary = `<!-- codex-pull-request-review-summary -->
+| Review | Status | Commit | Review trigger |
+| --- | --- | --- | --- |
+| 📝 **Code Review** | ✅ **Completed** | \`${sha.slice(0, 7)}\` | PR opened |`;
+  const fullReviewEnvelope = `
+### 💡 Codex Review
+
+Here are some automated review suggestions for this pull request.
+
+**Reviewed commit:** \`${sha.slice(0, 10)}\`
+
+<details> <summary>ℹ️ About Codex in GitHub</summary>
+<br/>
+
+[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you
+- Open a pull request for review
+- Mark a draft as ready
+- Comment "@codex review".
+
+If Codex has suggestions, it will comment; otherwise it will react with 👍.
+
+Codex can also answer questions or update the PR. Try commenting "@codex address that feedback".
+
+</details>`;
+  try {
+    await writeFile(
+      gh,
+      `#!${process.execPath}
+import {appendFileSync,existsSync,readFileSync} from "node:fs";
+const modeUrl=new URL("./mode.json",import.meta.url);const mode=existsSync(modeUrl)?JSON.parse(readFileSync(modeUrl,"utf8")):{};
+const callsUrl=new URL("./calls.log",import.meta.url);const priorCalls=existsSync(callsUrl)?readFileSync(callsUrl,"utf8"):"";
+if(process.env.GH_TOKEN!==undefined)appendFileSync(new URL("./token.log",import.meta.url),process.env.GH_TOKEN==="scoped-token"?"present\\n":"unexpected\\n");
+const args=process.argv.slice(2);const endpoint=args.includes("graphql")?"graphql":args.find((value)=>value.startsWith("repos/"))??args.at(-1)??"";
+const endpointCall=priorCalls.split(JSON.stringify(endpoint)).length-1;appendFileSync(callsUrl,JSON.stringify(args)+"\\n");
+const pull={number:41,node_id:"PR_example",html_url:"https://github.com/example/app/pull/41",state:"open",draft:true,body:"<!-- mill-delivery-key:fixture -->",head:{ref:"mill/task",sha:"${sha}"},base:{ref:"main"},merged:false,merge_commit_sha:null,merged_by:null,merged_at:null};
+const listedPull={...pull};delete listedPull.merged;delete listedPull.merged_by;delete listedPull.merged_at;
+if(endpoint==="user")console.log(JSON.stringify({login:"operator",id:7}));
+else if(endpoint==="repos/example/app")console.log(JSON.stringify({node_id:"R_example",full_name:"example/app",clone_url:"https://github.com/example/app.git",default_branch:"main",fork:false}));
+else if(endpoint.includes("/git/ref/heads/missing")){console.error("HTTP 404");process.exit(1)}
+else if(endpoint.includes("/git/ref/heads/"))console.log(JSON.stringify({object:{sha:"${sha}"}}));
+else if(endpoint.includes("/pulls?"))console.log(JSON.stringify([[listedPull]]));
+else if(args.includes("--method")&&endpoint==="repos/example/app/pulls")console.log(JSON.stringify(pull));
+else if(endpoint.endsWith("/pulls/41"))console.log(JSON.stringify(pull));
+else if(endpoint.includes("/pulls/41/commits?"))console.log(JSON.stringify([((mode.commits??["${sha}"]).map((sha)=>({sha}))) ]));
+else if(endpoint.includes("/check-runs"))console.log(JSON.stringify([{check_runs:[{id:101,name:"validate",status:"completed",conclusion:"success",app:{id:15368},head_sha:"${sha}",details_url:"https://github.com/example/app/actions/runs/50/job/101",...mode.check}]}]));
+else if(endpoint.endsWith("/actions/jobs/101"))console.log(JSON.stringify({id:101,run_id:50,head_sha:"${sha}",check_run_url:"https://api.github.com/repos/example/app/check-runs/101",...mode.job}));
+else if(endpoint.endsWith("/actions/runs/50"))console.log(JSON.stringify({head_sha:"${sha}",repository:{node_id:"R_example"},path:".github/workflows/ci.yml",event:"pull_request",...mode.run}));
+else if(endpoint.endsWith("/protection"))console.log(JSON.stringify({enforce_admins:{enabled:mode.admins??true},required_status_checks:{strict:mode.strict??true,checks:mode.protectedChecks??[{context:"validate",app_id:15368}]}}));
+else if(endpoint==="graphql")console.log(JSON.stringify(mode.ready??{data:{markPullRequestReadyForReview:{pullRequest:{id:"PR_example",isDraft:false}}}}));
+else if(endpoint.endsWith("/pulls/41/merge"))console.log(JSON.stringify({merged:mode.merged??true}));
+else if(endpoint.includes("/status?"))console.log(JSON.stringify([{statuses:[{state:"pending",context:"legacy"}]}]))
+else if(endpoint.includes("/reviews?"))console.log(JSON.stringify([[{id:11,user:{login:"chatgpt-codex-connector[bot]"},state:"COMMENTED",commit_id:"${sha}",body:"Top-level concern without a priority label",html_url:"https://github.com/example/app/pull/41#pullrequestreview-11",...mode.review}]]));
+else if(endpoint.includes("/issues/41/comments?")){const bodies=mode.issueBodies??[mode.issueBody??${JSON.stringify(completedSummary)}];const updatedAt=(mode.issueUpdatedAts??[])[endpointCall]??"2026-09-21T12:00:00Z";console.log(JSON.stringify([bodies.map((body,index)=>({id:13+index,user:{login:"chatgpt-codex-connector[bot]"},body,updated_at:updatedAt,html_url:"https://github.com/example/app/pull/41#issuecomment-"+(13+index)}))]));}
+else if(endpoint.includes("/comments?")){const body=mode.interleave&&endpointCall>0?"[P1] published with completion":"[P2] clarify edge case";console.log(JSON.stringify([[{id:12,user:{login:"chatgpt-codex-connector[bot]"},body,path:"src/index.ts",line:4,html_url:"https://github.com/example/app/pull/41#discussion_r12",commit_id:"${sha}"}]]));}
+else process.exit(2);
+`,
+      { mode: 0o755 },
+    );
+    await chmod(gh, 0o755);
+    process.env.MILL_GH_PATH = gh;
+    const adapter = createGitHubAdapter(repository.path);
+    return {
+      repository,
+      tools,
+      adapter,
+      completedSummary,
+      fullReviewEnvelope,
+      cleanup: () => Promise.all([repository.cleanup(), tools.cleanup()]),
+    };
+  } catch (error) {
+    await Promise.all([repository.cleanup(), tools.cleanup()]);
+    throw error;
+  }
+}
+
+describe("GitHub CLI adapter", () => {
+  it("uses bounded pagination and parses exact-head provider evidence", async () => {
+    const fixture = await githubFixture();
+    const { repository, tools, adapter, completedSummary, fullReviewEnvelope } =
+      fixture;
+    try {
+      await expect(
+        adapter.inspect({ config, deadlineMs: Date.now() + 10_000 }),
+      ).resolves.toMatchObject({
+        actorLogin: "operator",
+        repositoryNodeId: "R_example",
+        fullName: "example/app",
+      });
+      const tokenConfig: ProposeConfig = {
+        ...config,
+        deliveryCredential: {
+          mode: "fine_grained_token",
+          environment: "MILL_GITHUB_TOKEN",
+        },
+      };
+      await expect(
+        adapter.inspect({
+          config: tokenConfig,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({ code: "GITHUB_TOKEN_UNAVAILABLE" });
+      process.env.MILL_GITHUB_TOKEN = "scoped-token";
+      await expect(
+        adapter.inspect({
+          config: tokenConfig,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({ actorLogin: "operator" });
+      expect(
+        (await readFile(path.join(tools.path, "token.log"), "utf8"))
+          .trim()
+          .split("\n"),
+      ).toEqual(expect.arrayContaining(["present"]));
+      await expect(
+        adapter.findPullRequests({
+          config,
+          branch: "mill/task",
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toHaveLength(1);
+      await expect(
+        adapter.readBranch({
+          config,
+          branch: "missing",
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        adapter.createDraftPullRequest({
+          config,
+          branch: "mill/task",
+          title: "@/definitely-not-a-provider-input-file",
+          body: "body",
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({ number: 41, draft: true });
+      const observation = await adapter.observe({
+        config,
+        pullRequestNumber: 41,
+        deadlineMs: Date.now() + 10_000,
+      });
+      expect(observation).toMatchObject({
+        branchSha: sha,
+        checks: [
+          { name: "validate", status: "completed", conclusion: "success" },
+          { name: "legacy", status: "in_progress", conclusion: "pending" },
+        ],
+        reviews: [
+          {
+            id: "11",
+            actorLogin: "chatgpt-codex-connector[bot]",
+            state: "COMMENTED",
+            commitId: sha,
+            body: "Top-level concern without a priority label",
+          },
+          {
+            id: "codex-summary-13",
+            actorLogin: "chatgpt-codex-connector[bot]",
+            state: "CODEX_COMPLETED",
+            commitId: sha,
+            body: "",
+          },
+        ],
+        feedback: [
+          { priority: "unclassified", commitId: sha, path: null },
+          { priority: "P2", commitId: sha, path: "src/index.ts" },
+        ],
+      });
+      const timestamp = "2026-09-24T17:45:04.727157Z";
+      const relativeTime = `<relative-time datetime="${timestamp}">${timestamp}</relative-time>`;
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody: completedSummary.replace(
+            "✅ **Completed**",
+            `✅ **Completed** ${relativeTime}`,
+          ),
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_COMPLETED", commitId: sha },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody: completedSummary.replace(
+            "✅ **Completed**",
+            `🔄 **Running** since ${relativeTime}`,
+          ),
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_RUNNING", commitId: sha },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody: completedSummary.replace(
+            "✅ **Completed**",
+            `✅ **Completed** ${relativeTime.replace(timestamp, "2026-09-24T17:45:05Z")}`,
+          ),
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_INVALID", commitId: sha },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({ review: { state: "APPROVED", body: "LGTM" } }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "APPROVED", body: "LGTM" },
+          { state: "CODEX_COMPLETED", commitId: sha },
+        ],
+        feedback: [{ priority: "P2", path: "src/index.ts" }],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody: completedSummary
+            .replace("✅ **Completed**", "🔄 **Running**")
+            .replace(sha.slice(0, 7), "b".repeat(7)),
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_RUNNING", commitId: null },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          commits: [sha, `${sha.slice(0, 7)}${"b".repeat(33)}`],
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_COMPLETED", commitId: null },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody: completedSummary.replace(
+            "✅ **Completed**",
+            "✅ **Completed** 🔄 **Running**",
+          ),
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_INVALID", commitId: sha },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody: `${completedSummary}\n| 📝 **Code Review** | 🔄 **Running** | malformed | retried |`,
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_INVALID", commitId: sha },
+        ],
+      });
+      const callsBeforeInterleave = await readFile(
+        path.join(tools.path, "calls.log"),
+        "utf8",
+      );
+      await writeFile(path.join(tools.path, "calls.log"), "");
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({ interleave: true }),
+      );
+      const interleaved = await adapter.observe({
+        config,
+        pullRequestNumber: 41,
+        deadlineMs: Date.now() + 10_000,
+      });
+      expect(interleaved.reviews).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            state: "CODEX_COMPLETED",
+            commitId: sha,
+          }),
+        ]),
+      );
+      expect(interleaved.feedback).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            priority: "P1",
+            body: "[P1] published with completion",
+          }),
+        ]),
+      );
+      const interleaveCalls = await readFile(
+        path.join(tools.path, "calls.log"),
+        "utf8",
+      );
+      await writeFile(
+        path.join(tools.path, "calls.log"),
+        `${callsBeforeInterleave}${interleaveCalls}`,
+      );
+      const callsBeforeRevisionCheck = await readFile(
+        path.join(tools.path, "calls.log"),
+        "utf8",
+      );
+      await writeFile(path.join(tools.path, "calls.log"), "");
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueUpdatedAts: ["2026-09-21T12:00:00Z", "2026-09-21T12:00:01Z"],
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_INVALID", commitId: sha },
+        ],
+      });
+      const revisionCheckCalls = await readFile(
+        path.join(tools.path, "calls.log"),
+        "utf8",
+      );
+      await writeFile(
+        path.join(tools.path, "calls.log"),
+        `${callsBeforeRevisionCheck}${revisionCheckCalls}`,
+      );
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody: `${completedSummary}\n| 📝 **Code Review** | ✅ **Completed** | \`${sha.slice(0, 7)}\` | retried |`,
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_INVALID", commitId: sha },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          review: {
+            body: fullReviewEnvelope,
+          },
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_COMPLETED", commitId: sha },
+        ],
+        feedback: [{ priority: "P2", path: "src/index.ts" }],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBody:
+            "<!-- codex-pull-request-review-summary -->\n| 📝 **Code Review** | unknown | malformed |",
+        }),
+      );
+      const malformed = await adapter.observe({
+        config,
+        pullRequestNumber: 41,
+        deadlineMs: Date.now() + 10_000,
+      });
+      expect(
+        malformed.reviews.some((review) => review.state.startsWith("CODEX_")),
+      ).toBe(true);
+      expect(malformed.reviews).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            state: "CODEX_INVALID",
+            commitId: sha,
+          }),
+        ]),
+      );
+      expect(malformed.feedback).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ priority: "unclassified" }),
+        ]),
+      );
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          issueBodies: [
+            completedSummary,
+            "<!-- codex-pull-request-review-summary -->\n| 📝 **Code Review** | unknown | malformed |",
+          ],
+        }),
+      );
+      await expect(
+        adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toMatchObject({
+        reviews: [
+          { state: "COMMENTED", commitId: sha },
+          { state: "CODEX_COMPLETED", commitId: sha },
+          { state: "CODEX_INVALID", commitId: sha },
+        ],
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          review: {
+            body: fullReviewEnvelope.replace(
+              "<details>",
+              "[P1] retain this finding\n\n<details>",
+            ),
+          },
+        }),
+      );
+      const substantive = await adapter.observe({
+        config,
+        pullRequestNumber: 41,
+        deadlineMs: Date.now() + 10_000,
+      });
+      expect(substantive.feedback).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            priority: "P1",
+            body: "[P1] retain this finding",
+          }),
+        ]),
+      );
+      await writeFile(path.join(tools.path, "mode.json"), "{}");
+      const calls = await readFile(path.join(tools.path, "calls.log"), "utf8");
+      const paginated = calls
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+        .filter((args) => args.includes("--paginate"));
+      expect(paginated).not.toHaveLength(0);
+      expect(paginated.every((args) => args.includes("--slurp"))).toBe(true);
+      const createCall = calls
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+        .find(
+          (args) =>
+            args.includes("--method") &&
+            args.includes("repos/example/app/pulls"),
+        );
+      expect(createCall).toBeDefined();
+      expect(
+        createCall?.filter((value) => value === "--raw-field"),
+      ).toHaveLength(4);
+      expect(createCall).toEqual(
+        expect.arrayContaining([
+          "title=@/definitely-not-a-provider-input-file",
+          "head=mill/task",
+          "base=main",
+          "body=body",
+          "--field",
+          "draft=true",
+        ]),
+      );
+
+      const git = path.join(tools.path, "git");
+      await writeFile(
+        git,
+        `#!${process.execPath}\nimport {writeFileSync} from "node:fs";writeFileSync(new URL("./git-call.json",import.meta.url),JSON.stringify(process.argv.slice(2)));process.exit(0);\n`,
+        { mode: 0o755 },
+      );
+      await chmod(git, 0o755);
+      process.env.MILL_GIT_PATH = git;
+      await expect(
+        adapter.pushExact({
+          root: repository.path,
+          config,
+          cloneUrl: "https://github.com/example/app.git",
+          branch: "mill/task",
+          candidateCommit: sha,
+          expectedOldCommit: null,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).resolves.toBeUndefined();
+      const gitCall = JSON.parse(
+        await readFile(path.join(tools.path, "git-call.json"), "utf8"),
+      ) as string[];
+      expect(gitCall).toContain("--force-with-lease=refs/heads/mill/task:");
+      await expect(
+        adapter.pushExact({
+          root: repository.path,
+          config,
+          cloneUrl: "https://github.com/example/app.git",
+          branch: "feature/task",
+          candidateCommit: sha,
+          expectedOldCommit: null,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_DELIVERY_BRANCH" });
+      await expect(
+        adapter.pushExact({
+          root: repository.path,
+          config,
+          cloneUrl: "https://github.com/lookalike/app.git",
+          branch: "mill/task",
+          candidateCommit: sha,
+          expectedOldCommit: null,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({
+        code: "GITHUB_REPOSITORY_BINDING_MISMATCH",
+      });
+      process.env.MILL_GIT_PATH = path.join(tools.path, "missing-git");
+      await expect(
+        adapter.pushExact({
+          root: repository.path,
+          config,
+          cloneUrl: "https://github.com/example/app.git",
+          branch: "mill/task",
+          candidateCommit: sha,
+          expectedOldCommit: null,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({ code: "SHIPPER_TOOL_UNAVAILABLE" });
+      await writeFile(
+        git,
+        `#!${process.execPath}\nsetInterval(()=>{},1000);\n`,
+        { mode: 0o755 },
+      );
+      await chmod(git, 0o755);
+      process.env.MILL_GIT_PATH = git;
+      let cancellationPolls = 0;
+      await expect(
+        adapter.pushExact({
+          root: repository.path,
+          config,
+          cloneUrl: "https://github.com/example/app.git",
+          branch: "mill/task",
+          candidateCommit: sha,
+          expectedOldCommit: null,
+          deadlineMs: Date.now() + 10_000,
+          cancellationRequested: () => ++cancellationPolls >= 2,
+        }),
+      ).rejects.toMatchObject({ code: "GITHUB_PUSH_OUTCOME_UNKNOWN" });
+      expect(cancellationPolls).toBeGreaterThanOrEqual(2);
+      await writeFile(git, `#!${process.execPath}\nprocess.exit(9);\n`, {
+        mode: 0o755,
+      });
+      await chmod(git, 0o755);
+      process.env.MILL_GIT_PATH = git;
+      await expect(
+        adapter.pushExact({
+          root: repository.path,
+          config,
+          cloneUrl: "https://github.com/example/app.git",
+          branch: "mill/task",
+          candidateCommit: sha,
+          expectedOldCommit: null,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({ code: "GITHUB_PUSH_OUTCOME_UNKNOWN" });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it.each([
+    ["[P2] advisory first\n[P1] blocking later", "P1"],
+    ["[P1] blocking first\n[P2] advisory later", "P1"],
+    ["[P3] minor\n[P0] critical\n[P1] major", "P0"],
+    ["[p2] advisory\n[p1] major", "P1"],
+    ["[P2] standalone advisory", "P2"],
+    ["Concern with no priority", "unclassified"],
+  ] as const)(
+    "uses aggregate priority %s -> %s for observation and merge gates",
+    async (body, expected) => {
+      const fixture = await githubFixture();
+      const { tools, adapter } = fixture;
+      try {
+        await writeFile(
+          path.join(tools.path, "mode.json"),
+          JSON.stringify({ review: { body } }),
+        );
+        const classified = await adapter.observe({
+          config,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        });
+        expect(
+          classified.feedback.find((item) => item.id === "review-11")?.priority,
+        ).toBe(expected);
+        // Delivery observation and attended merge both use this exact gate.
+        expect(
+          actionableFeedback(classified, config.reviewPolicy, sha, "p0_p1")
+            .length,
+        ).toBe(expected === "P2" ? 0 : 1);
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it("binds check producers and strict merge operations to exact provider identities", async () => {
+    const fixture = await githubFixture();
+    const { tools, adapter } = fixture;
+    try {
+      const producerConfig: ProposeConfig = {
+        ...config,
+        checkProducers: {
+          validate: {
+            appId: 15368,
+            workflowPath: ".github/workflows/ci.yml",
+            pullRequestEvent: "pull_request",
+            postMergeEvent: "push",
+          },
+        },
+      };
+      const bound = await adapter.observe({
+        config: producerConfig,
+        pullRequestNumber: 41,
+        deadlineMs: Date.now() + 10_000,
+      });
+      expect(bound.checks[0]).toMatchObject({
+        appId: 15368,
+        headSha: sha,
+        workflowPath: ".github/workflows/ci.yml",
+        event: "pull_request",
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({
+          check: { id: 102 },
+          job: {
+            check_run_url:
+              "https://api.github.com/repos/example/app/check-runs/102",
+          },
+        }),
+      );
+      const linked = await adapter.observe({
+        config: producerConfig,
+        pullRequestNumber: 41,
+        deadlineMs: Date.now() + 10_000,
+      });
+      expect(linked.checks[0]).toMatchObject({
+        id: 102,
+        workflowPath: ".github/workflows/ci.yml",
+        event: "pull_request",
+      });
+      for (const mode of [
+        { check: { app: { id: 99 } } },
+        {
+          check: {
+            details_url:
+              "https://github.com/foreign/app/actions/runs/50/job/101",
+          },
+        },
+        {
+          check: {
+            details_url: "https://github.com/example/app/actions/runs/invalid",
+          },
+        },
+        { check: { id: 102 } },
+        { job: { id: 102 } },
+        { job: { run_id: 51 } },
+        { job: { head_sha: "b".repeat(40) } },
+        {
+          job: {
+            check_run_url:
+              "https://api.github.com/repos/foreign/app/check-runs/101",
+          },
+        },
+        { run: { head_sha: "b".repeat(40) } },
+        { run: { repository: { node_id: "R_foreign" } } },
+      ]) {
+        await writeFile(
+          path.join(tools.path, "mode.json"),
+          JSON.stringify(mode),
+        );
+        const denied = await adapter.observe({
+          config: producerConfig,
+          pullRequestNumber: 41,
+          deadlineMs: Date.now() + 10_000,
+        });
+        expect(denied.checks[0]?.workflowPath).toBeUndefined();
+      }
+      await writeFile(path.join(tools.path, "mode.json"), "{}");
+      if (
+        adapter.strictChecks === undefined ||
+        adapter.markReady === undefined ||
+        adapter.mergeExact === undefined
+      )
+        throw new Error("merge adapter missing");
+      expect(
+        await adapter.strictChecks({
+          config: producerConfig,
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).toBe(true);
+      for (const mode of [
+        { admins: false },
+        { protectedChecks: [] },
+        { protectedChecks: [{ context: "validate", app_id: null }] },
+        { protectedChecks: [{ context: "validate", app_id: 99 }] },
+      ]) {
+        await writeFile(
+          path.join(tools.path, "mode.json"),
+          JSON.stringify(mode),
+        );
+        expect(
+          await adapter.strictChecks({
+            config: producerConfig,
+            deadlineMs: Date.now() + 10_000,
+          }),
+        ).toBe(false);
+      }
+      await writeFile(path.join(tools.path, "mode.json"), "{}");
+      await adapter.markReady({
+        config,
+        pullRequestNodeId: "PR_example",
+        deadlineMs: Date.now() + 10_000,
+      });
+      await adapter.mergeExact({
+        config,
+        pullRequestNumber: 41,
+        headSha: sha,
+        method: "squash",
+        deadlineMs: Date.now() + 10_000,
+      });
+      await writeFile(
+        path.join(tools.path, "mode.json"),
+        JSON.stringify({ strict: false, ready: { errors: [] }, merged: false }),
+      );
+      expect(
+        await adapter.strictChecks({ config, deadlineMs: Date.now() + 10_000 }),
+      ).toBe(false);
+      await expect(
+        adapter.markReady({
+          config,
+          pullRequestNodeId: "PR_example",
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({ code: "GITHUB_READY_FAILED" });
+      await expect(
+        adapter.mergeExact({
+          config,
+          pullRequestNumber: 41,
+          headSha: sha,
+          method: "squash",
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({ code: "GITHUB_MERGE_NOT_CONFIRMED" });
+      await writeFile(path.join(tools.path, "mode.json"), "{}");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("reads exact merge identity, containment, and post-merge checks", async () => {
+    const repository = await temporaryDirectory("mill-github-merged-");
+    const tools = await temporaryDirectory("mill-github-merged-tools-");
+    const gh = path.join(tools.path, "gh");
+    const mergeSha = "c".repeat(40);
+    const tree = "b".repeat(40);
+    try {
+      await writeFile(
+        gh,
+        `#!${process.execPath}
+const args=process.argv.slice(2);const endpoint=args.find((value)=>value.startsWith("repos/"))??args.at(-1)??"";
+const pull={number:41,node_id:"PR_example",html_url:"https://github.com/example/app/pull/41",state:"closed",draft:false,body:"marker",head:{ref:"mill/task",sha:"${sha}"},base:{ref:"main"},merged:true,merge_commit_sha:"${mergeSha}",merged_by:{login:"operator"},merged_at:"2026-09-01T17:00:00.000Z"};
+if(endpoint.endsWith("/pulls/41"))console.log(JSON.stringify(pull));
+else if(endpoint.includes("/pulls/41/commits?"))console.log(JSON.stringify([[{sha:"${sha}"}]]));
+else if(endpoint.includes("/git/ref/heads/mill")){console.error("HTTP 404");process.exit(1)}
+else if(endpoint.includes("/git/ref/heads/main"))console.log(JSON.stringify({object:{sha:"${mergeSha}"}}));
+else if(endpoint.includes("/check-runs"))console.log(JSON.stringify([{check_runs:[{name:"validate",status:"completed",conclusion:"success"}]}]));
+else if(endpoint.includes("/status?"))console.log(JSON.stringify([{statuses:[]}]))
+else if(endpoint.includes("/reviews?"))console.log(JSON.stringify([[]]));
+else if(endpoint.includes("/comments?"))console.log(JSON.stringify([[]]));
+else if(endpoint.includes("/git/commits/"))console.log(JSON.stringify({sha:"${mergeSha}",tree:{sha:"${tree}"},parents:[{sha:"${"d".repeat(40)}"}]}));
+else if(endpoint.includes("/compare/"))console.log(JSON.stringify({status:"identical"}));
+else process.exit(2);
+`,
+        { mode: 0o755 },
+      );
+      await chmod(gh, 0o755);
+      process.env.MILL_GH_PATH = gh;
+      const observation = await createGitHubAdapter(repository.path).observe({
+        config,
+        pullRequestNumber: 41,
+        deadlineMs: Date.now() + 10_000,
+      });
+      expect(observation).toMatchObject({
+        branchSha: null,
+        defaultBranchHead: mergeSha,
+        pullRequest: { mergedByLogin: "operator" },
+        mergeCommit: { sha: mergeSha, tree, parents: ["d".repeat(40)] },
+        mergeIsOnDefaultBranch: true,
+        mergeChecks: [{ name: "validate", conclusion: "success" }],
+      });
+    } finally {
+      await Promise.all([repository.cleanup(), tools.cleanup()]);
+    }
+  });
+
+  it("fails closed on malformed, incomplete, and failed provider responses", async () => {
+    const repository = await temporaryDirectory("mill-github-invalid-");
+    const tools = await temporaryDirectory("mill-github-invalid-tools-");
+    const gh = path.join(tools.path, "gh");
+    const mode = path.join(tools.path, "mode");
+    try {
+      await writeFile(
+        gh,
+        `#!${process.execPath}
+import {readFileSync} from "node:fs";
+const mode=readFileSync(new URL("./mode",import.meta.url),"utf8").trim();
+if(mode==="call-failed")process.exit(3);if(mode==="invalid-json"){console.log("{");process.exit(0)}
+const args=process.argv.slice(2);const endpoint=args.find((value)=>value.startsWith("repos/"))??args.at(-1)??"";
+const pull={number:41,node_id:"PR_example",html_url:"https://github.com/example/app/pull/41",state:mode==="bad-pull-state"?"unexpected":"open",draft:mode==="bad-draft"?"true":true,body:"marker",head:{ref:"mill/task",sha:"${sha}"},base:{ref:"main"},merged:false,merge_commit_sha:null,merged_by:null,merged_at:null};
+const listedPull={...pull};if(mode==="bad-merged")listedPull.merged="false";else delete listedPull.merged;delete listedPull.merged_by;delete listedPull.merged_at;
+if(endpoint==="user")console.log(JSON.stringify({login:mode==="bad-login"?"":"operator",id:mode==="bad-actor"?0:7}));
+else if(endpoint==="repos/example/app")console.log(JSON.stringify(mode==="bad-repo"?[]:{node_id:"R_example",full_name:"example/app",clone_url:"https://github.com/example/app.git",default_branch:"main",fork:mode==="bad-fork"?"false":false}));
+else if(endpoint.includes("/git/ref/heads/"))console.log(JSON.stringify({object:{sha:mode==="bad-sha"?"bad":"${sha}"}}));
+else if(endpoint.includes("/pulls?"))console.log(JSON.stringify(mode==="bad-pages"?{}:mode==="bad-page"?[{}]:[[listedPull]]));
+else if(endpoint.endsWith("/pulls/41"))console.log(JSON.stringify(pull));
+else if(endpoint.includes("/pulls/41/commits?"))console.log(JSON.stringify([[{sha:"${sha}"}]]));
+else if(endpoint.includes("/check-runs"))console.log(JSON.stringify(mode==="bad-check-pages"?{}:mode==="bad-check-page"?[{}]:[{check_runs:[]}]))
+else if(endpoint.includes("/status?"))console.log(JSON.stringify([{statuses:[]}]))
+else if(endpoint.includes("/reviews?"))console.log(JSON.stringify([[]]));
+else if(endpoint.includes("/comments?"))console.log(JSON.stringify([[]]));
+else process.exit(2);
+`,
+        { mode: 0o755 },
+      );
+      await chmod(gh, 0o755);
+      process.env.MILL_GH_PATH = gh;
+      const adapter = createGitHubAdapter(repository.path);
+      const inspect = () =>
+        adapter.inspect({ config, deadlineMs: Date.now() + 10_000 });
+      for (const invalidMode of [
+        "bad-actor",
+        "bad-login",
+        "bad-repo",
+        "bad-fork",
+      ]) {
+        await writeFile(mode, invalidMode);
+        await expect(inspect()).rejects.toMatchObject({
+          code: "INVALID_GITHUB_RESPONSE",
+        });
+      }
+      await writeFile(mode, "bad-sha");
+      await expect(
+        adapter.readBranch({
+          config,
+          branch: "mill/task",
+          deadlineMs: Date.now() + 10_000,
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_GITHUB_RESPONSE" });
+      for (const invalidMode of [
+        "bad-pull-state",
+        "bad-draft",
+        "bad-merged",
+        "bad-pages",
+        "bad-page",
+      ]) {
+        await writeFile(mode, invalidMode);
+        await expect(
+          adapter.findPullRequests({
+            config,
+            branch: "mill/task",
+            deadlineMs: Date.now() + 10_000,
+          }),
+        ).rejects.toMatchObject({ code: "INVALID_GITHUB_RESPONSE" });
+      }
+      for (const invalidMode of ["bad-check-pages", "bad-check-page"]) {
+        await writeFile(mode, invalidMode);
+        await expect(
+          adapter.observe({
+            config,
+            pullRequestNumber: 41,
+            deadlineMs: Date.now() + 10_000,
+          }),
+        ).rejects.toMatchObject({ code: "INVALID_GITHUB_RESPONSE" });
+      }
+      for (const invalidMode of ["call-failed", "invalid-json"]) {
+        await writeFile(mode, invalidMode);
+        await expect(inspect()).rejects.toMatchObject({
+          code:
+            invalidMode === "call-failed"
+              ? "GITHUB_CALL_FAILED"
+              : "INVALID_GITHUB_RESPONSE",
+        });
+      }
+    } finally {
+      await Promise.all([repository.cleanup(), tools.cleanup()]);
+    }
+  });
+});

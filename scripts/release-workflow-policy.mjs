@@ -1,0 +1,291 @@
+export const releaseVerifierPreparation = [
+  `verifier_image=$(node -e 'const fs=require("node:fs"),y=require("yaml");const image=y.parse(fs.readFileSync("recipes/node-typescript-next-web/recipe.yaml","utf8")).verifierImage;if(typeof image!=="string"||!/@sha256:[a-f0-9]{64}$/.test(image))throw new Error("Digest-pinned verifier required");process.stdout.write(image)')`,
+  'docker pull "$verifier_image"',
+  'docker image inspect "$verifier_image" >/dev/null',
+].join("\n");
+
+export const releaseDispatchCheck = [
+  "set -eu",
+  "printf '%s\\n' \"$RELEASE_TAG\" | grep -Eq '^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$'",
+  'normalized_ref=$(git check-ref-format --normalize "refs/tags/$RELEASE_TAG")',
+  'test "$normalized_ref" = "refs/tags/$RELEASE_TAG"',
+  'test "$(git cat-file -t "$normalized_ref")" = tag',
+  'test "$(git rev-parse "${normalized_ref}^{commit}")" = "$(git rev-parse HEAD^{commit})"',
+  'notes_dir="docs/releases"',
+  'notes_file="${notes_dir}/${RELEASE_TAG}.md"',
+  'test -d docs && test ! -L docs && test -d "$notes_dir" && test ! -L "$notes_dir" && test -f "$notes_file" && test ! -L "$notes_file" && test -s "$notes_file"',
+].join("\n");
+
+export const releaseQualificationInputCheck = [
+  'test -n "$SUPPORT_TUPLE_BASE64"',
+  'test -n "$SEQUENCE_BASE64"',
+  'node -e \'for(const name of ["SUPPORT_TUPLE_BASE64","SEQUENCE_BASE64"]){const decoded=Buffer.from(process.env[name],"base64").toString("utf8");const value=JSON.parse(decoded);if(typeof value!=="object"||value===null||Array.isArray(value))throw new Error(`${name} must decode to one JSON object`)}\'',
+].join("\n");
+
+const releaseTagInput = "${{ inputs.tag }}";
+
+/** Every requested-tag release job starts with one exact immutable dispatch boundary. */
+export function releaseDispatchFailures(jobs) {
+  const failures = [];
+  for (const jobId of ["build", "qualify", "publish"]) {
+    const job = jobs[jobId];
+    const steps = Array.isArray(job?.steps) ? job.steps : [];
+    const checks = steps
+      .map((step, index) => ({ step, index }))
+      .filter(({ step }) => step?.id === "verify-release-dispatch");
+    const check = checks[0];
+    const checkout = steps[0];
+    const immutableCheckout =
+      checkout?.name === "Checkout immutable tag" &&
+      typeof checkout.uses === "string" &&
+      checkout.uses.startsWith("actions/checkout@") &&
+      checkout.with?.ref === releaseTagInput &&
+      checkout.with?.["fetch-depth"] === 0 &&
+      checkout.with?.["persist-credentials"] === false &&
+      checkout.if === undefined &&
+      [undefined, false].includes(checkout["continue-on-error"]);
+    if (
+      checks.length !== 1 ||
+      typeof check?.step?.run !== "string" ||
+      check.step.run.trim() !== releaseDispatchCheck ||
+      check.step.env?.RELEASE_TAG !== releaseTagInput ||
+      check.step.if !== undefined ||
+      ![undefined, false].includes(check.step["continue-on-error"]) ||
+      ![undefined, false].includes(job?.["continue-on-error"]) ||
+      !immutableCheckout ||
+      check.index !== 1
+    ) {
+      failures.push(
+        `${jobId}: immutable checkout must be followed immediately by exact requested-tag dispatch proof`,
+      );
+    }
+  }
+  return failures;
+}
+
+/** Candidate input must be valid before a runner spends time on builds or canaries. */
+export function releaseQualificationInputFailures(jobs) {
+  const job = jobs.qualify;
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  const checks = steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step?.id === "validate-qualification-inputs");
+  const check = checks[0];
+  if (
+    checks.length !== 1 ||
+    check?.index !== 2 ||
+    typeof check.step.run !== "string" ||
+    check.step.run.trim() !== releaseQualificationInputCheck ||
+    check.step.env?.SUPPORT_TUPLE_BASE64 !==
+      "${{ inputs.support_tuple_base64 }}" ||
+    check.step.env?.SEQUENCE_BASE64 !== "${{ inputs.sequence_base64 }}" ||
+    check.step.if !== undefined ||
+    ![undefined, false].includes(check.step["continue-on-error"])
+  ) {
+    return [
+      "qualify: qualification input must be validated before setup and candidate execution",
+    ];
+  }
+  return [];
+}
+
+/** A public-alpha release remains plainly labelled while GitHub can mark it Latest. */
+export function releasePublicationFailures(jobs) {
+  const job = jobs.publish;
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  const publish = steps.find(
+    (step) =>
+      step?.name === "Publish the exact preserved artifact with provenance",
+  );
+  const registryReadback = steps.find(
+    (step) => step?.name === "Read back npm and verify signatures",
+  );
+  const create = steps.find(
+    (step) => step?.name === "Create draft GitHub Release with exact artifacts",
+  );
+  const draftReadbackIndex = steps.findIndex(
+    (step) => step?.name === "Read back draft GitHub Release evidence",
+  );
+  const publishReleaseIndex = steps.findIndex(
+    (step) =>
+      step?.name === "Publish GitHub Release after draft evidence readback",
+  );
+  const finalReadbackIndex = steps.findIndex(
+    (step) =>
+      step?.name ===
+      "Read back published GitHub Release and attach final evidence",
+  );
+  const draftReadback = steps[draftReadbackIndex];
+  const publishRelease = steps[publishReleaseIndex];
+  const finalReadback = steps[finalReadbackIndex];
+  const failures = [];
+  if (
+    typeof publish?.run !== "string" ||
+    !publish.run.includes(
+      'npm publish "$artifact" --provenance --access public --tag latest',
+    ) ||
+    publish.run.includes("--tag alpha")
+  ) {
+    failures.push(
+      "publish: trusted publication must advance latest directly with the preserved artifact",
+    );
+  }
+  if (
+    typeof registryReadback?.run !== "string" ||
+    !registryReadback.run.includes("scripts/retry-npm-metadata.mjs") ||
+    !registryReadback.run.includes(
+      '"$RUNNER_TEMP/npm-observation-initial.json"',
+    ) ||
+    registryReadback.run.indexOf("retry-npm-metadata.mjs") >
+      registryReadback.run.indexOf("retry-npm-install.mjs")
+  ) {
+    failures.push(
+      "publish: registry readback must bind latest to the published version",
+    );
+  }
+  if (
+    typeof registryReadback?.run !== "string" ||
+    !registryReadback.run.includes("retry-npm-install.mjs") ||
+    !registryReadback.run.includes("retry-npm-signatures.mjs") ||
+    registryReadback.run.indexOf("retry-npm-install.mjs") >
+      registryReadback.run.indexOf("retry-npm-signatures.mjs")
+  ) {
+    failures.push(
+      "publish: package reachability must settle before signature verification",
+    );
+  }
+  if (
+    typeof create?.run !== "string" ||
+    !create.run.includes(
+      'gh release create "$RELEASE_TAG" --verify-tag --draft',
+    ) ||
+    !create.run.includes('--title "Mill $RELEASE_TAG (Public alpha)"') ||
+    create.run.includes("--prerelease")
+  ) {
+    failures.push(
+      "publish: GitHub release must be a plainly labelled normal public-alpha release",
+    );
+  }
+  for (const requiredAsset of [
+    '"$RUNNER_TEMP/qualified/qualification.json"',
+    '"$RUNNER_TEMP/qualified/artifact-metadata.json"',
+    '"$RUNNER_TEMP/qualified/audit.json"',
+    '"$RUNNER_TEMP/qualified/identity.json"',
+    '"$RUNNER_TEMP/qualified/release-canary.json"',
+    '"$RUNNER_TEMP/trusted/trusted-verifier.json"',
+    '"$RUNNER_TEMP/trusted/trusted-canary.json"',
+  ]) {
+    if (
+      typeof create?.run !== "string" ||
+      !create.run.includes(requiredAsset)
+    ) {
+      failures.push(
+        "publish: draft release must retain the qualified candidate and independent verifier records",
+      );
+      break;
+    }
+  }
+  const draftEvidenceUpload =
+    'gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release-evidence-draft.json"';
+  const finalRelease = 'gh release edit "$RELEASE_TAG" --draft=false --latest';
+  if (
+    typeof publishRelease?.run !== "string" ||
+    !publishRelease.run.includes(finalRelease) ||
+    publishRelease.run.includes("--prerelease")
+  ) {
+    failures.push(
+      "publish: final GitHub release must remain a normal public-alpha release",
+    );
+  }
+  if (
+    typeof finalReadback?.run !== "string" ||
+    !finalReadback.run.includes("scripts/retry-npm-metadata.mjs") ||
+    !finalReadback.run.includes('"$RUNNER_TEMP/registry-dist-final.json"') ||
+    !finalReadback.run.includes(
+      'gh api "repos/$GITHUB_REPOSITORY/releases/latest"',
+    ) ||
+    !finalReadback.run.includes("scripts/capture-release-channels.mjs") ||
+    !finalReadback.run.includes('"$RUNNER_TEMP/release-channels.json"') ||
+    (finalReadback.run.match(/release-channels\.json/gu)?.length ?? 0) !== 2 ||
+    (finalReadback.run.match(/npm-observation-final\.json/gu)?.length ?? 0) !==
+      2 ||
+    (finalReadback.run.match(/registry-dist-final\.json/gu)?.length ?? 0) !==
+      2 ||
+    finalReadback.run.indexOf("capture-release-channels.mjs") >
+      finalReadback.run.indexOf("assemble-release-evidence.mjs") ||
+    finalReadback.if !== undefined ||
+    ![undefined, false].includes(finalReadback["continue-on-error"])
+  ) {
+    failures.push(
+      "publish: final evidence must bind fresh npm latest and GitHub Latest readbacks",
+    );
+  }
+  if (
+    typeof draftReadback?.run !== "string" ||
+    !draftReadback.run.includes(draftEvidenceUpload) ||
+    typeof publishRelease?.run !== "string" ||
+    typeof finalReadback?.run !== "string" ||
+    !finalReadback.run.includes(
+      'gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release-evidence-final.json"',
+    ) ||
+    draftReadbackIndex < 0 ||
+    publishReleaseIndex <= draftReadbackIndex ||
+    finalReadbackIndex <= publishReleaseIndex
+  ) {
+    failures.push(
+      "publish: draft and published release evidence must be retained in their observed order",
+    );
+  }
+  return failures;
+}
+
+/** Every fresh release runner prepares its own image before dependent effects. */
+export function releaseVerifierPreparationFailures(jobs) {
+  const failures = [];
+  const selectedJobs = new Set(["qualify", "independent-policy", "publish"]);
+  for (const [jobId, job] of Object.entries(jobs)) {
+    if (
+      Array.isArray(job?.steps) &&
+      job.steps.some(
+        (step) =>
+          typeof step?.run === "string" &&
+          (step.run.includes("--full-canary") ||
+            /\bnpm publish\b/u.test(step.run)),
+      )
+    )
+      selectedJobs.add(jobId);
+  }
+  for (const jobId of selectedJobs) {
+    const job = jobs[jobId];
+    const steps = Array.isArray(job?.steps) ? job.steps : [];
+    const preparations = steps
+      .map((step, index) => ({ step, index }))
+      .filter(({ step }) => step?.id === "prepare-release-verifier");
+    const firstCanary = steps.findIndex(
+      (step) =>
+        typeof step?.run === "string" && step.run.includes("--full-canary"),
+    );
+    const firstPublish = steps.findIndex(
+      (step) =>
+        typeof step?.run === "string" && /\bnpm publish\b/u.test(step.run),
+    );
+    const prepared = preparations[0];
+    if (
+      preparations.length !== 1 ||
+      typeof prepared.step.run !== "string" ||
+      prepared.step.run.trim() !== releaseVerifierPreparation ||
+      prepared.step.if !== undefined ||
+      ![undefined, false].includes(prepared.step["continue-on-error"]) ||
+      ![undefined, false].includes(job?.["continue-on-error"]) ||
+      firstCanary < 0 ||
+      prepared.index >= firstCanary ||
+      (firstPublish >= 0 && prepared.index >= firstPublish) ||
+      (jobId === "publish" && firstPublish < 0)
+    ) {
+      failures.push(
+        `${jobId}: verifier preparation must be exact, unconditional and before every full canary and publication effect`,
+      );
+    }
+  }
+  return failures;
+}

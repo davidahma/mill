@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1",
+  "changeId": "MREV-ARCH-PRODUCT-2026-10-01",
+  "measurements": [
+    {
+      "id": "approved-scope",
+      "kind": "native",
+      "evidenceDigest": "sha256:b1a8e5f23f2b8962a7bcf14bb8b0a27ae7898f088cd909f576b14af2f55052d2",
+      "candidateCommit": "d7d8821af17068c6644ba3aa684ec8deb6216985",
+      "source": "unavailable",
+      "inputTokens": null,
+      "outputTokens": null,
+      "cacheInputTokens": null
+    }
+  ],
+  "effort": {
+    "preparationMinutes": null,
+    "reviewMinutes": null,
+    "repairMinutes": null
+  },
+  "hostedRequests": null
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "mill": {
+      "type": "object",
+      "properties": {
+        "package": { "type": "string", "const": "@davidahmann/mill" },
+        "version": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "integrity": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "controllerDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": ["package", "version"],
+      "additionalProperties": false
+    },
+    "schemaDigests": {
+      "default": {},
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 1 },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[a-f0-9]{64}$"
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      },
+      "required": ["id", "version", "digest"],
+      "additionalProperties": false
+    },
+    "integration": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["greenfield", "adoption"] },
+        "planDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "baseCommit": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            { "type": "null" }
+          ]
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^*?[\\]\\\\]+(?:\\/\\*\\*)?$"
+              },
+              "ownership": {
+                "type": "string",
+                "enum": ["mill_only", "generated_once", "managed"]
+              },
+              "templateDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "installedDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "preexistingDigest": {
+                "anyOf": [
+                  { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                  { "type": "null" }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "ownership",
+              "templateDigest",
+              "installedDigest",
+              "preexistingDigest"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["mode", "planDigest", "baseCommit", "files"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schemaVersion", "mill"],
+  "additionalProperties": false,
+  "$id": "https://github.com/davidahmann/mill/schemas/mill-lock.schema.json",
+  "title": "MillLock"
+}

@@ -1,0 +1,11 @@
+schemaVersion: "1"
+id: saved-counter
+outcome:
+  id: OUT-SAVED-COUNTER
+  statement: Show the most recently saved counter value after reopening.
+oracleOwner: unknown
+primaryUser: A person keeping a small local count
+jobToBeDone: Resume a saved count without reentering it
+nonGoals:
+  - Multiuser synchronization
+  - Cloud storage

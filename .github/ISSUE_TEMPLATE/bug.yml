@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible Mill defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Redact source, credentials, prompts, and private logs.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Mill source commit and controller digest
+      description:
+        Use git rev-parse HEAD and millctl --json build-info from your Mill
+        checkout.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, Node and affected tool versions
+      description: Include Git, Docker, Codex or gh when relevant.
+    validations:
+      required: true

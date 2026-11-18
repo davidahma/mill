@@ -1,0 +1,518 @@
+# Mill architecture
+
+Status: approved v1 decision Last updated: 2026-10-01
+
+## Form
+
+Mill is a TypeScript modular monolith on Node 24 LTS. It exposes the `millctl`
+CLI and stable JSON result envelopes. Operational state uses Node's SQLite API;
+durable product truth remains in Git. V1 runs one attended control-plane process
+and exits to resumable state for long waits—there is no daemon.
+
+## Preparation and operational evidence
+
+`init prepare` is a deterministic, draft-only one-outcome scaffold. Existing
+contracts outrank the request; missing or conflicting decisions remain visible.
+`readiness` reads the selected task, context and spend policy. Only its explicit
+attended verifier probe inspects a local image, without pulling or
+qualification.
+
+Packaged preparation-session operations share the retained review journal.
+Candidate and acceptance reviews have distinct purposes; only the latest clean
+candidate result can be ready to push. Reconciliation retains failed usage and
+requires evidence that the old controller and reviewer stopped. Approved base
+continuations append history and preserve cumulative spending and expiry.
+
+Run state remains operational state beside an append-only event log. Open and
+restore validate the physical schema controls, not only its version ledger.
+Worker admission records the resolved executable path, bytes and version; launch
+rechecks that identity. Verification attempts retain separate UUID directories,
+so interrupted report collection cannot overwrite prior artifacts on retry.
+
+`handoff` derives all diagnostics from a consistent state/event snapshot. It
+reports every known blocker and a safe next action. Silence alone is not a
+stall, a provider snapshot is not live approval, and native owner disposition is
+separate from Mill closure. Whole-change evidence links declared measurements
+without counting cached input twice. Exact consumption manifests keep public
+runtime ownership, private pin adoption and customer qualification separate.
+
+An isolated reviewer remains future work. Qualification must demonstrate
+read-only source, controlled short-lived model authentication, denied forge
+credentials and network destinations, bounded output and process cleanup. The
+current trusted-host review must not be described as this stronger boundary.
+
+## Brownfield repository intelligence
+
+`discover` is a deterministic, derived-evidence boundary beside—not inside—the
+delivery lifecycle. It first rejects a dirty Git tree, sensitive path, symbolic
+link, truncated traversal, unsafe Git configuration, or unsafe changed path. It
+then captures the `HEAD` commit/tree and its regular-file blob identities. It
+reads bounded TypeScript/JavaScript files and package metadata through the
+existing safe-path reader and derives evidence only when the physical bytes
+match the captured blobs. A final `HEAD` check rejects a concurrent identity
+change. The report binds extractor identity and the Git commit/tree, preserves
+import source locations, marks external, unresolved, and nonliteral
+relationships, separates static test inventory and literal selector matches from
+unknown executed coverage, and traverses reverse local imports for conservative
+direct/transitive change leads. Recursive glob selectors and option-bearing test
+commands remain unknown unless a future extractor explicitly supports them.
+
+The command uses Git only for read-only identity/status queries after static
+configuration screening; it does not invoke a package manager, model, target
+command, hook, watcher, graph service, or write path. A report is stale when its
+source or extractor identity differs, and its `derived_read_only` authority
+cannot approve a task, skip a native gate, or cause a PR, merge, release, or
+other effect. The output is an orientation and review artifact, not arbitrary
+stack support or proof of runtime behavior.
+
+## Boundaries
+
+The implemented Wave 3 boundary is:
+
+```text
+exact human-authored task + product/scenario/policy digests
+        -> passing exact-base qualification and explicit approval digest
+        -> disposable exact-base worktree
+        -> bounded Codex builder using operator authentication
+        -> lifecycle-owned clean local commit
+        -> selected digest-pinned OCI commands without network
+        -> fresh read-only Codex review of the exact verified commit
+        -> reviewed local candidate or one repair-and-revalidate cycle
+        -> exact actor/repository/remote proposal digest
+        -> expected-head push + immutable-marker draft PR
+        -> exact-head CI and configured GitHub-review observation
+        -> separately approved readiness when hosted review starts there
+        -> completed exact-head hosted review and separately approved merge
+        -> exact merge/tree/default-branch check readback and closure
+```
+
+The complete planned v1 boundary extends that path:
+
+```text
+untrusted PRD/repo/web inputs
+        -> source and product compiler (proposal only)
+        -> exact human-approved product/scenario/blueprint contract
+        -> one JIT task and capability grant
+        -> Codex builder in disposable worktree
+        -> lifecycle-owned local commit
+        -> native verifier + realistic scenarios
+        -> fresh read-only local reviewer
+        -> shipper using local gh
+        -> GitHub CI/readback
+        -> human readiness + merge
+        -> main-check observation and closure
+```
+
+The builder never receives forge/deployment authority. The shipper cannot create
+or amend the candidate commit. Product/oracle changes invalidate the candidate.
+Provider state is authoritative for external effects.
+
+Wave 4A adds two fail-closed seams without adding another harness. Read-only
+planning commands assess an operator-supplied PRD, disclosed source manifest,
+and structured proposal; they return blockers, semantic differences, canonical
+bytes, and exact approval digests without writing files, running repository
+commands, or invoking a model. Live research and proposal generation remain an
+explicit later coordinator step, not an implied crawler. Approved product
+contracts carry stable outcome, acceptance, invariant, decision, and scenario
+IDs. Each material task binds one approved outcome and an exact human-approved
+impact manifest, and validation reports new-behavior and preservation evidence
+separately. Scenario and invariant evidence must execute their own approved
+command or carry an unexpired human attestation with an exact kind, stable ID,
+and content-digest claim for that item; an acceptance claim or generic passing
+command cannot certify another semantic item. Task-packet version 1 remains a
+byte-stable, resume-only legacy shape for in-flight runs. Every new run uses
+version 2, which requires the impact manifest and exact product-to-task semantic
+graph.
+
+Codex remains the only worker implementation behind an internal `WorkerAdapter`.
+Before every builder, repair, or reviewer process starts, Mill records an
+immutable redacted invocation envelope containing the task, context epoch,
+candidate when applicable, role profile, prompt-template digest, allowed scope,
+deadline, and output budget. Launch intent is durable before spawn. Exactly one
+terminal provider event settles an invocation. Reviewer JSONL may contain
+progress messages, but the CLI's private, bounded `--output-last-message` file
+is the sole schema-valid review result. Candidate publication is atomic with its
+mutating-worker settlement, and review-result publication is atomic with its
+reviewer settlement, so a crash cannot consume an attempt without preserving the
+corresponding result. Process exit is journaled against the invocation in the
+same transaction that clears its active-process binding. A possibly started
+mutating invocation becomes uncertain and is reconciled from candidate, process,
+and worktree state instead of being blindly replayed.
+
+Wave 4B turns those approved contracts into repository integration without
+adding another executor. The bundled `node-typescript-next-web` recipe binds one
+manifest digest to every exact generated asset, dependency version, runtime
+patch, native command, license allowlist, and digest-pinned verifier image. A
+greenfield plan is staged outside its destination, receives a separate exact
+human approval, prepares lock-bound dependencies through attended registry
+network, runs the complete recipe gate, creates one canonical DCO commit, and
+only then reserves the still-absent target without replacement. It materializes
+files without `.git` and atomically renames the complete staged `.git` directory
+into place as the final authority-publication boundary; the reserved path is not
+a repository before that operation. A target-scoped exclusive lock prevents
+concurrent Mill apply, while the exclusive reservation preserves a target
+created by another process after approval. Greenfield publication is a two-phase
+cancellation boundary: target materialization stays cancellable and rechecks
+immediately before the atomic `.git` rename; once that rename is invoked, Mill
+completes and reports the exact published result. Failure removes staging, the
+Mill-owned reservation, and only state created by that attempt. Adoption first
+performs the static scanner and exact compatibility checks, rejects symbolic
+links and credential-like files including `.npmrc`, and requires the approved
+PRD to remain outside generated builder-writable source scopes. It then records
+only non-conflicting integration files on an isolated branch; the operator
+checkout does not move. Adopted commands retain their native scripts only when
+they and their recipe-owned oracle files match the exact qualified closure; Mill
+does not guess an arbitrary repository's test graph. `mill.lock` records recipe
+and plan identity, base commit, file ownership, template bytes, installed bytes,
+and preexisting bytes so detachment can remain an inspectable manual decision.
+The approved plan identity excludes its derived lock bytes to avoid a digest
+cycle, binds every other plan field and file action including a digest of the
+canonical absolute target, and is then recorded unchanged in both the plan and
+`mill.lock`. Planning also proves that the approved blueprint selects the exact
+bundled recipe, version, and runtime. Packable template aliases are rendered to
+required dotfiles, and product values are emitted as syntax-safe source and
+Markdown literals. A generated product task may use recipe command evidence only
+when its approved scenario names a matching recipe oracle. That oracle declares
+the specific delivered behavior, command, and evidence paths; a generic `check`
+label alone grants no product evidence. Selected invariants must be
+command-verifiable, and scenarios cannot cross the selected outcome's acceptance
+closure. The integration identity also binds the exact Mill generator
+package/version. Greenfield targets are canonicalized beneath the selected root
+and reject symbolic-link or non-directory ancestors before plan or apply
+effects. Integration writes independently reject unsafe file ancestors rather
+than trusting a previous scan. Generated task risk is derived from affected
+invariant criticality; medium- and high-risk outcomes need an approved
+executable non-normal scenario.
+
+Dependency preparation and candidate verification are separate authorities.
+Preparation uses the exact verifier image, an explicit npm manager and HTTPS
+registry origin, disabled lifecycle scripts, bounded resources, and an attended
+network disclosure. The exported boundary independently requires build trust and
+attendance. It copies approved lock inputs to staging before identity, rejects
+an absent root `package-lock.json`, alternate or credential/query-bearing
+sources, unsupported links/workspaces, malformed or incomplete SHA-512
+integrity, and absent or symbolic dependency output, then rechecks the frozen
+inputs before atomically publishing a snapshot keyed by verifier image, manager,
+registry, target, and lock bytes. The marker also binds a deterministic digest
+of every installed directory, regular-file byte stream, executable bit, and
+contained symbolic-link target; both preparation reuse and verification
+recompute it. Operator cancellation reaches the networked installer process
+group and cleanup completes before the cancellation result is returned.
+Verification never installs or pulls. It mounts that snapshot read-only, mounts
+each top-level source entry read-only through a protected workspace skeleton,
+and exposes only declared comma-free top-level scratch directories as bounded
+tmpfs. This preserves a read-only candidate while supporting framework and
+browser outputs. Nested scratch paths, occupied mount targets, symbolic links,
+unsupported entries, and ambiguous comma-bearing entry names fail closed.
+
+OCI test/package commands may explicitly grant `executableFixtureScratch: true`.
+Only that grant adds the fixed `/mill-fixtures` tmpfs outside the repository:
+256 MiB, executable, nosuid and nodev, with the same non-root container
+identity, network denial, resource bounds and unconditional lifecycle cleanup.
+The opted-in container uses Docker's init process to reap orphaned fixture
+children; default commands retain their existing process setup. It grants no
+host bind, source/dependency write or arbitrary mount path. Default commands
+receive no such mount; their existing noexec scratch posture is unchanged. The
+command configuration is part of baseline/context authority, so adding the grant
+invalidates prior approvals. Temporary repositories must stay outside the source
+checkout to avoid inheriting its Git and package context.
+
+The founder commands are coordinators, not new state machines. `run next`
+resolves exactly one ready outcome and calls the existing run boundary. `start`
+binds that outcome, its product-contract digest, approved impact, acceptance
+set, and task before registry or model spend, inventories all nonterminal runs
+rather than trusting recency, then advances the same sole durable build,
+verification, review, remote-readback, and closure states. Remote readback and
+closure do not re-run build preflight or dependency preparation. `ship --draft`
+retains the existing separate exact proposal and attended open operations. None
+of these commands can mark ready, merge, deploy, or interpret an unapproved PRD
+as execution authority. The lifecycle boundary repeats the no-active-run check
+under the same exclusive writer lease that creates a run, so two coordinators
+cannot pass a stale preflight and create parallel lifecycles.
+
+The GitHub adapter is isolated behind the delivery coordinator. Planning reads
+the live delegated actor, repository node identity, clone URL, fork status and
+default branch, then binds them with the candidate commit/tree, task/config,
+branch, required checks, review policy, allowed merge methods, approval expiry,
+and intended effects. Draft delivery mutates only through `pr open`; the
+separate opt-in attended readiness/merge boundary is described below. Its effect
+journal records intent and call start before each push or PR request, caps each
+effect at two attempts, and makes ambiguous results enter `effect_unknown`.
+Reconciliation performs authoritative branch/marker/PR readback without
+mutation. Expiration blocks new mutation authority but never prevents readback
+or truthful lifecycle closure for an already attempted effect. Exact absence
+permits one retry; a second absent outcome blocks for human disposition. The
+same recorded PR number, node identity, marker, branch, base, open-draft state,
+and observed head are invariant whether an ambiguous repair push is absent or
+landed. A retry performs that check again from a fresh readback immediately
+before recording call start and invoking Git. GitHub API collections are
+paginated under one deadline and output budget. Tokens remain behind the
+operator-owned `gh` and Git credential-helper boundary and are not passed to
+Codex or stored in state.
+
+One stable delivery key and branch identify the PR across the single allowed
+repair. A new candidate gets new validation, review, approval, and push-effect
+identity while updating that same PR. Required checks are evaluated on the exact
+current head; missing, pending, conflicting, cancelled, neutral, skipped,
+timed-out, or failed results do not pass. Draft delivery does not change
+readiness or merge state, and readiness is not treated as closure authority.
+Finalization requires GitHub to prove the PR head, merge commit, tree,
+authorized merger identity, containment in the configured default branch,
+allowed merge shape, and successful required checks on the exact merge commit.
+One-parent tree-preserving history is classified only as
+`linear_tree_preserving`, never guessed to be squash or rebase from policy. A
+tree-changing merge requires separate revalidation rather than inferred closure.
+
+In Wave 2, the qualification approval digest binds a passing baseline's exact
+base commit, canonical task and repository configuration, selected command
+definitions, and normalized evidence identity. The context manifest, candidate
+commit/tree, validation evidence, and review result are durably linked in
+repository-namespaced SQLite state. Public CLI results and support bundles omit
+the worktree path, context payload, prompts, raw model streams, command output,
+and credentials. Codex invocations ignore operator configuration and execution
+rules and disable host skill search to prevent globally installed workflows from
+silently changing task behavior or token use. They still use the operator-owned
+authentication home and honor repository-local instructions, so this is input
+control rather than host containment. Mill freezes the effective per-directory
+`AGENTS.override.md` or `AGENTS.md` choice and re-enumerates the complete path
+set before every later worker wake; changed bytes, additions, removals, or
+precedence changes invalidate the context epoch. `contextPaths` select frozen
+priority read-only context rather than limiting filesystem reads. The active
+task, `mill.yaml`, authority files, repository instructions, and
+selected-command `controlPaths` form the immutable oracle closure and cannot
+overlap candidate output scope. Build qualification rejects tracked symlinks and
+configured sensitive paths, Git replacement refs, and graft metadata before
+creating the worktree; lifecycle Git commands also disable replacement objects.
+Secrets must remain untracked and outside the repository.
+
+Repository playbooks add an optional context layer. A task binds one indexed
+repository file and explicit playbook IDs; admission validates the index bytes,
+each selected file's digest and matching identity, adds only those files to
+frozen priority context, and records the retrieval in the context manifest.
+Index search is read-only metadata discovery. It does not observe agent file
+reads, create a tool registry, provide MCP access, or make a playbook part of
+the acceptance oracle. Shared migration knowledge and repository procedures are
+both subordinate to the task's approved product, scenario, impact and command
+authority.
+
+Baseline qualification is part of build authority, not static inspection. The
+runtime enforces the repository trust ceiling before OCI discovery or command
+execution. Verifier preflight and commands inherit the caller's same absolute
+deadline and foreground signal lifecycle, while safety cleanup alone retains its
+independent bounded deadline.
+
+## Local lifecycle and recovery
+
+### Approved architecture follow-through
+
+The optional merge controller reuses delivery policy and the same writer lease.
+It binds an exact PR/head/base/tree, GitHub operator, method, policy and expiry,
+requires strict checks and App/workflow/event/head provenance, and journals
+readiness and merge separately. GitHub CAS protects the PR head, not an atomic
+base comparison; exact tree and resulting-main readback remain mandatory. The
+attended CLI is a trusted operator boundary, not a signed chat-message verifier.
+
+The task compiler consumes approved product/scenario/impact authority and an
+operator-supplied source-bound change request. It derives dependency-checked
+version-2 tasks and never obtains authority from prose. Native adoption is a
+separate experimental Node ESM/npm path preserving source and native commands.
+Both persist apply intent and file identities inside SQLite before worktree
+effects. Backup/restore therefore retains their identities; committed-file
+readback and purge checks preserve unfinished authority work.
+
+Opt-in context includes a bounded, source-bound static repository-map slice. It
+remains derived evidence. Native validation failures can supply one typed repair
+generation only from failed nonzero-exit evidence on the exact committed
+candidate; infrastructure uncertainty cannot be relabelled a code repair. Failed
+evidence survives the repair. Review binds the complete configured-base
+merge-base diff, including preparatory commits, with commit/tree/path/digest
+identity rechecked before promotion.
+
+Audit categories report structural assurance, not executed behavior. Compact
+status omits raw validation/review data and reports measured/partial/unavailable
+usage without invented cost. Its versioned `continuation` projection binds the
+public run identity to a single attended next action; unresolved worker or
+external-effect evidence routes only to reconciliation, and the projection
+cannot mutate the run. Input, output, and cache-input tokens are reported only
+when a completed provider event supplied each integer field. Routine release
+qualification additionally runs the verifier and artifact canary pinned to the
+qualified v0.1.5 commit; candidate checks do not replace that independent
+policy.
+
+The read-only run timeline projects the existing append-only local event journal
+into schema-backed event sequence, timestamps, types and state transitions. It
+checks monotonic ordering, creation, transition continuity, legal transition
+edges and agreement with the durable run status. Timeline output contains no
+event payloads, prompts, command output, paths or telemetry export. It is
+diagnostic evidence, never a lifecycle mutator, repair path or effect authority.
+
+Only one writer lease may mutate a repository namespace. The lease is a
+dedicated SQLite exclusive transaction: kernel ownership makes acquisition
+atomic and releases it on controller death, without stale-directory deletion or
+ABA races. Child processes run in their own process group with an absolute
+deadline and output cap while their controller is alive. Docker's daemon can
+outlive both controller and client. Verifier and dependency containers therefore
+have durable ownership intents and a separate kernel lease; recovery checks
+private labels and binds removal readback to the observed container and daemon.
+Unresolved ownership blocks retry and destructive cleanup. There is no
+host-independent deadline watchdog; see [OCI recovery](../docs/oci-recovery.md).
+The persisted absolute run deadline is reused for verification, review, retry,
+repair, and resume; ordinary checkpoints grant no fresh budget. The explicit
+[candidate recovery](../docs/verifier-recovery.md) boundary may grant one
+separately approved verification/review window after eligible infrastructure
+failure and expiry of the original deadline. A committed candidate pin is
+required. Its immutable receipt retains the original deadline, failure history,
+controller identity and exact candidate. It grants no builder or repair and
+requires settled worker/container ownership before application. An attempt ID
+plus PID, PGID, and process-start digest is diagnostic state, not signalling
+authority. Cancellation is durable state polled by the foreground lease owner,
+which terminates its own in-memory child, including a GitHub mutation process;
+no command signals a stored PID. Cancellation is rechecked before each external
+effect, and an interrupted effect remains unknown until authoritative readback.
+If the lease is free but a recorded process may still exist, resume and terminal
+cancellation fail closed for attended reconciliation. State events are
+append-only, backup restore validates SQLite integrity, schema, and required
+objects before atomic replacement. Restoring older state moves newer
+unreferenced Mill worktrees into a mode-restricted quarantine. Its immutable
+recovery manifest records the database-swap commit point and exact moved paths;
+restore never silently deletes them. Purge requires every run to be reviewed or
+terminal. A failed pre-build context setup removes its provisional worktree and
+branch. Review attempt budgets are scoped to an exact candidate generation, and
+repair reasserts the reviewed commit/tree before allowing writes. There is no
+background daemon or implicit retry.
+
+The built-in Codex builder is a trusted-host `workspace-write` process, not an
+isolated worker. Mill exposes that boundary through `isolation`; an explicit
+isolated request fails closed because an external adapter has not been
+qualified. The qualification requirements are intentionally concrete: disposable
+filesystem and declared scratch only, no host/forge/package/provider credential
+mount, deny-by-default egress, pinned identity with resource and cancellation
+controls, and negative boundary tests. The fuller brownfield evidence design and
+the deliberately deferred repository-context and governed improvement forms are
+recorded in
+[`reliability-brownfield-foundation.md`](reliability-brownfield-foundation.md).
+
+## Core modules
+
+- intake/source classifier;
+- product, scenario, blueprint, and JIT compilers;
+- static repository scanner and transactional bootstrap/retrofit engine;
+- frozen context compiler and Codex adapter;
+- immutable worker profile, admission, launch, and settlement journal;
+- SQLite control plane and append-only run events;
+- worktree/process runner and command policy;
+- native verifier and scenario runner;
+- exact-candidate local reviewer and bounded repair coordinator;
+- GitHub shipper, effect journal, readback, and closure;
+- audits and qualification/release commands.
+
+The first qualified greenfield recipe is a Node.js 24.18.1 and npm 11.16.0
+TypeScript web modular monolith using Next.js 16.4.6, React 19.2.8, and
+Playwright 1.62.1. These runtime patches truthfully match the selected exact OCI
+image and are intentionally independent of Mill's Node 24.20.0 maintainer
+runtime. The recipe generates native format, lint, type, unit, integration,
+browser, build, and package gates and remains independently operable with npm.
+It is deliberately one qualified recipe, not a generalized stack claim.
+
+## Identity and authority
+
+Product truth and native commands come from the canonical Git revision.
+Operational state is keyed by repository UUID, canonical Git common directory,
+and run UUID. A fork, changed forge owner, lookalike remote, or second clone
+does not inherit `propose` authority. Every external mutation persists intent
+before the call and reconciles unknown outcomes before retry.
+
+## Containment claim
+
+Selected verification commands run against a clean exact candidate in a
+digest-pinned OCI environment with no network, a read-only root, individually
+read-only top-level source mounts, dropped capabilities, no-new-privileges,
+bounded PID/memory/CPU/shared-memory/output/deadline resources, and no implicit
+image pull. Declared top-level dependency inputs mount read-only and declared
+top-level scratch outputs mount as bounded tmpfs; they may not hide candidate
+content. Every command receives an opaque Mill-owned container name and evidence
+is withheld until an unconditional, separately bounded `docker rm --force`
+succeeds. If the canonical workspace or dependency source path contains a comma,
+Mill uses a mode-restricted exact-realpath alias so Docker's comma-delimited
+long syntax cannot truncate it. A top-level candidate entry containing a comma
+is not representable by this verifier and blocks. Codex runs in attended
+trusted-host mode using workspace-write sandboxing and promotion-time Git scope
+and identity checks. Mill does not claim this prevents all host access. Stronger
+containment requires a separately qualified container/VM worker with controlled
+model authentication and no host-home, Docker-socket, keychain, or forge
+credential access.
+
+## Release trust
+
+### Attended action authority and recovery
+
+The maintainer owns these trusted CLI boundaries. Model output proposes work; it
+cannot establish approval or completion. Repository UUID/common Git identity
+scopes local state; repository node ID, actor and exact PR identity scope forge
+effects. Public output is minimized, while private evidence remains local.
+
+| Effect                   | Authority at execution                                                                                                              | Denial and recovery                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Compile/apply authority  | Exact source/base/file digest, attendance, build-or-propose ceiling, writer lease                                                   | Inspect-only cannot apply; durable intent prevents duplicate writes; committed-file readback settles                      |
+| Push/open draft          | Exact verified/reviewed candidate and approved delivery plan; reviewed diff equals provider-base diff                               | Changed base scope blocks before each effect; unknown effects require GitHub readback                                     |
+| Ready/merge              | Opt-in exact plan, allowed live actor, producer-bound checks, protection enforced for administrators, current task/impact authority | Expiry is checked at each effect; readiness and merge have separate journal states; ambiguous merge never retries blindly |
+| Purge authority worktree | Confirmed repository UUID, safe runs, reconciled clean files, durable exact-commit deletion intent                                  | An absent worktree requires matching retained Git branch/file evidence; changed or missing evidence blocks                |
+
+These controls apply the Field Guide's typed-action, current-authority, readback
+and recovery patterns (TOL-001/003/004, IAM-002/003, SEC-004/005,
+REL-001/003/005) through Mill-native contracts. They do not claim a hosted
+credential broker, signed chat identity, enterprise tenant service, or full
+Field Guide conformance. Worker profile/context digests and release
+artifact/provenance evidence remain the capability-admission records; no
+self-declared replacement manifest grants authority.
+
+GitHub provides head-SHA compare-and-swap but no atomic requested-base-SHA
+comparison for merges. Required strict checks, matching check App IDs and
+administrator/bypass-role enforcement are mandatory compensating controls. The
+trusted operator must not concurrently change repository policy or refs.
+Post-effect tree readback verifies completion; it is not a substitute for those
+pre-effect controls. Mill never weakens or configures provider protection.
+
+Wave 5 adds three bounded modules without creating another orchestrator. The
+audit module reads repository contracts and exact Git identity and emits a
+schema-valid report; it has no write or effect capability. The qualification
+module validates a supplied support tuple, a dependency-ordered sequence,
+item-level new/preservation evidence, a rejected seeded fault, packed canaries,
+and audit summaries; it cannot manufacture missing evidence. Release scripts
+compare, preserve, assemble, and read back artifacts under the manual GitHub
+workflow. These modules reuse canonical digests and the public result envelope,
+but they do not enter the run-state machine.
+
+The first public artifact follows a genesis protocol. The exact reviewed
+candidate tree must equal the resulting squash-merged `main` tree. An annotated
+tag binds that reviewed tree and points to the resulting main commit. Two clean
+GitHub-hosted builders check out the tag, pass the full gate, and independently
+pack it. A comparator safely extracts each tarball, rejects unsafe entry types
+or paths, and requires equal canonical path/mode/content identities. One tarball
+is copied without replacement and becomes the sole publication artifact.
+
+The candidate phase installs and qualifies that tarball, exercises greenfield
+and compatible adoption in disposable repositories, runs downstream native
+checks in the pinned verifier image, verifies operation without Mill, records an
+SBOM, and assembles the nine-category audit and longitudinal qualification. The
+separately approved publish phase downloads those exact preserved bytes,
+publishes them through npm trusted OIDC and provenance, re-downloads and
+requalifies the registry artifact, and compares npm and GitHub Release readback.
+No publication-time repack is allowed. A mismatch blocks the support claim and
+enters the withdrawal path. Trusted release N qualifies N+1 beginning with the
+next release.
+
+The release workflow is not a daemon, deployment service, or autonomous release
+authority. Tagging, publication, and GitHub Release creation remain distinct
+maintainer-authorized effects. Support attaches only to the non-expired exact
+tuple and recipe in final evidence.
+
+## Review policy evidence
+
+The optional top-level `review.blocking: p0_p1` setting is frozen in the run's
+configuration digest. A controller-owned review gate partitions the unchanged
+finding IDs into blocking and advisory sets. The worker cannot supply that
+receipt. State, delivery, refresh, merge and outcome readers validate the
+partition and config identity. A missing receipt preserves legacy behavior.
+Delivery records also retain the remote-feedback policy; required GitHub
+approval is evaluated separately. See [the policy](../docs/review-policy.md).

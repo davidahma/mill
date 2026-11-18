@@ -1,0 +1,1490 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import {
+  access,
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { once } from "node:events";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  acquireWriterLease,
+  purgeRepositoryState,
+  repositoryStateDirectory,
+  restoreStateBackup,
+  StateStore,
+} from "../src/runtime/state.js";
+import { temporaryDirectory } from "./helpers.js";
+
+const originalStateHome = process.env.MILL_STATE_HOME;
+
+afterEach(() => {
+  if (originalStateHome === undefined) delete process.env.MILL_STATE_HOME;
+  else process.env.MILL_STATE_HOME = originalStateHome;
+});
+
+function startWorkerInvocation(
+  store: StateStore,
+  runId: string,
+  phase: "build" | "repair" | "review",
+): string {
+  const invocationId = randomUUID();
+  store.admitWorkerInvocation({
+    runId,
+    invocationId,
+    phase,
+    envelopeDigest: `sha256:${"d".repeat(64)}`,
+    envelopeJson: '{"redacted":true}',
+  });
+  store.markWorkerLaunchStarted(invocationId);
+  return invocationId;
+}
+
+function stateReview(candidate: string, blocked = false): string {
+  return JSON.stringify({
+    schemaVersion: "1",
+    candidateCommit: candidate.repeat(40),
+    summary: "Review",
+    findings: blocked
+      ? [
+          {
+            id: "R1",
+            severity: "P1",
+            class: "correctness",
+            title: "Failure",
+            body: "Repro",
+            file: null,
+            line: null,
+          },
+        ]
+      : [],
+  });
+}
+
+describe("operational state", () => {
+  it.each([
+    ["missing schema metadata", "DROP TABLE metadata"],
+    [
+      "missing schema version",
+      "DELETE FROM metadata WHERE key = 'schema_version'",
+    ],
+    ["missing column", "ALTER TABLE runs DROP COLUMN block_code"],
+    [
+      "ineffective append-only trigger",
+      "DROP TRIGGER run_events_no_update; CREATE TRIGGER run_events_no_update BEFORE UPDATE ON run_events BEGIN SELECT 1; END",
+    ],
+    [
+      "ineffective immutable trigger",
+      "DROP TRIGGER worker_invocations_no_delete; CREATE TRIGGER worker_invocations_no_delete BEFORE DELETE ON worker_invocations WHEN 0 BEGIN SELECT RAISE(ABORT, 'worker invocations are immutable'); END",
+    ],
+    [
+      "unexpected journal-suppressing trigger",
+      "CREATE TRIGGER suppress_journal BEFORE INSERT ON run_events BEGIN SELECT RAISE(IGNORE); END",
+    ],
+    ["ineffective constraint", "weaken_constraint"],
+  ])(
+    "rejects %s in current open, diagnostic open and restore",
+    async (_label, mutation) => {
+      const temporary = await temporaryDirectory("mill-state-physical-");
+      process.env.MILL_STATE_HOME = temporary.path;
+      const repositoryId = "11111111-1111-4111-8111-111111111111";
+      const store = await StateStore.open(repositoryId, temporary.path);
+      const databasePath = store.databasePath;
+      store.close();
+      const originalDatabase = await readFile(databasePath);
+      const database = new DatabaseSync(databasePath);
+      if (mutation === "weaken_constraint") {
+        const schema = database
+          .prepare("SELECT sql FROM sqlite_schema WHERE name = 'runs'")
+          .get() as { sql: string };
+        database.exec(
+          schema.sql
+            .replace(/CREATE TABLE "?runs"?/u, "CREATE TABLE runs_weak")
+            .replace(
+              "CHECK(cancel_requested IN (0, 1))",
+              "CHECK(cancel_requested IN (0, 1) OR 1)",
+            ),
+        );
+        database.exec("DROP TABLE runs; ALTER TABLE runs_weak RENAME TO runs");
+      } else database.exec(mutation);
+      database.close();
+      try {
+        await expect(
+          StateStore.openReadOnly(repositoryId, temporary.path),
+        ).rejects.toMatchObject({ code: "STATE_SCHEMA_INVARIANT_FAILED" });
+        await expect(
+          StateStore.open(repositoryId, temporary.path),
+        ).rejects.toMatchObject({ code: "STATE_SCHEMA_INVARIANT_FAILED" });
+        const backupPath = path.join(
+          path.dirname(databasePath),
+          "corrupt.sqlite3",
+        );
+        await writeFile(backupPath, await readFile(databasePath));
+        await writeFile(databasePath, originalDatabase);
+        await expect(
+          restoreStateBackup(repositoryId, temporary.path, backupPath),
+        ).rejects.toMatchObject({ code: "INVALID_STATE_BACKUP" });
+      } finally {
+        await temporary.cleanup();
+      }
+    },
+  );
+  it.each([
+    [2, "valid"],
+    [2, "missing-column"],
+    [2, "ineffective-trigger"],
+    [3, "valid"],
+    [3, "missing-column"],
+    [3, "ineffective-trigger"],
+  ] as const)(
+    "validates physical invariants in a v%s %s historical backup before swapping it",
+    async (schemaVersion, mode) => {
+      const temporary = await temporaryDirectory(
+        "mill-state-historical-restore-",
+      );
+      process.env.MILL_STATE_HOME = temporary.path;
+      const repositoryId = "11111111-1111-4111-8111-111111111111";
+      const store = await StateStore.open(repositoryId, temporary.path);
+      const databasePath = store.databasePath;
+      store.close();
+      const before = await readFile(databasePath);
+      const backupPath = path.join(
+        path.dirname(databasePath),
+        "historical.sqlite3",
+      );
+      const legacy = new DatabaseSync(backupPath);
+      legacy.exec(
+        await readFile(
+          new URL("./fixtures/state-v0.5.sql", import.meta.url),
+          "utf8",
+        ),
+      );
+      legacy
+        .prepare("INSERT INTO metadata(key,value) VALUES ('schema_version',?)")
+        .run(String(schemaVersion));
+      if (schemaVersion === 2) legacy.exec("DROP TABLE schema_migrations");
+      else
+        for (const [version, name] of [
+          [1, "initial-durable-state"],
+          [2, "worker-and-delivery-recovery-columns"],
+          [3, "numbered-migration-ledger"],
+        ] as const)
+          legacy
+            .prepare(
+              "INSERT INTO schema_migrations(version,name,applied_at) VALUES (?,?,?)",
+            )
+            .run(version, name, "2026-09-01T00:00:00.000Z");
+      if (mode === "missing-column")
+        legacy.exec("ALTER TABLE runs DROP COLUMN block_code");
+      if (mode === "ineffective-trigger")
+        legacy.exec(
+          "DROP TRIGGER worker_invocations_no_delete; CREATE TRIGGER worker_invocations_no_delete BEFORE DELETE ON worker_invocations BEGIN SELECT 1; END",
+        );
+      legacy.close();
+      try {
+        if (mode === "valid") {
+          await restoreStateBackup(repositoryId, temporary.path, backupPath);
+          const restored = await StateStore.open(repositoryId, temporary.path);
+          expect(restored.stats().schemaVersion).toBe(4);
+          restored.close();
+        } else {
+          await expect(
+            restoreStateBackup(repositoryId, temporary.path, backupPath),
+          ).rejects.toMatchObject({ code: "INVALID_STATE_BACKUP" });
+          await expect(readFile(databasePath)).resolves.toEqual(before);
+        }
+      } finally {
+        await temporary.cleanup();
+      }
+    },
+  );
+
+  it("keeps absent and older state diagnostic reads free of writes", async () => {
+    const temporary = await temporaryDirectory("mill-state-read-only-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const directory = repositoryStateDirectory(repositoryId, temporary.path);
+    try {
+      await expect(
+        StateStore.openReadOnly(repositoryId, temporary.path),
+      ).resolves.toBeUndefined();
+      await expect(access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const writable = await StateStore.open(repositoryId, temporary.path);
+      const databasePath = writable.databasePath;
+      writable.close();
+      const database = new DatabaseSync(databasePath);
+      try {
+        database
+          .prepare(
+            "UPDATE metadata SET value = '3' WHERE key = 'schema_version'",
+          )
+          .run();
+      } finally {
+        database.close();
+      }
+      const before = await readFile(databasePath);
+      await expect(
+        StateStore.openReadOnly(repositoryId, temporary.path),
+      ).rejects.toMatchObject({ code: "STATE_UPGRADE_REQUIRED" });
+      await expect(readFile(databasePath)).resolves.toEqual(before);
+    } finally {
+      await temporary.cleanup();
+    }
+  });
+
+  it("backs up a supported state before applying its forward upgrade", async () => {
+    const temporary = await temporaryDirectory("mill-state-preupgrade-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const databasePath = store.databasePath;
+    const directory = store.directory;
+    store.close();
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.exec("DELETE FROM schema_migrations WHERE version = 4");
+      database
+        .prepare("UPDATE metadata SET value = '3' WHERE key = 'schema_version'")
+        .run();
+    } finally {
+      database.close();
+    }
+    const upgraded = await StateStore.open(repositoryId, temporary.path);
+    try {
+      const backups = (await readdir(directory)).filter((name) =>
+        name.startsWith("state-backup-preupgrade-v3-"),
+      );
+      expect(backups).toHaveLength(1);
+      const backupPath = path.join(directory, backups[0] ?? "");
+      const backup = new DatabaseSync(backupPath, { readOnly: true });
+      try {
+        expect(
+          backup
+            .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
+            .get(),
+        ).toEqual({ value: "3" });
+        expect(
+          backup
+            .prepare(
+              "SELECT 1 AS present FROM schema_migrations WHERE version = 4",
+            )
+            .get(),
+        ).toBeUndefined();
+      } finally {
+        backup.close();
+      }
+      expect(upgraded.stats().schemaVersion).toBe(4);
+    } finally {
+      upgraded.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it.each(["1", "2", "3"])(
+    "migrates supported v%s state to the numbered current schema without losing runs",
+    async (legacyVersion) => {
+      const temporary = await temporaryDirectory("mill-state-migration-");
+      process.env.MILL_STATE_HOME = temporary.path;
+      const repositoryId = "11111111-1111-4111-8111-111111111111";
+      const store = await StateStore.open(repositoryId, temporary.path);
+      const run = store.createRun({
+        repositoryId,
+        taskId: "preserved-run",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const databasePath = store.databasePath;
+      store.close();
+      const database = new DatabaseSync(databasePath);
+      try {
+        database.exec("DELETE FROM schema_migrations");
+        database
+          .prepare("UPDATE metadata SET value = ? WHERE key = 'schema_version'")
+          .run(legacyVersion);
+      } finally {
+        database.close();
+      }
+      const migrated = await StateStore.open(repositoryId, temporary.path);
+      try {
+        expect(migrated.getRun(run.id)).toMatchObject({
+          id: run.id,
+          taskId: "preserved-run",
+        });
+        expect(migrated.events(run.id)).toHaveLength(1);
+        expect(migrated.stats()).toMatchObject({
+          schemaVersion: 4,
+          migrations: [
+            { version: 1, name: "initial-durable-state" },
+            { version: 2, name: "worker-and-delivery-recovery-columns" },
+            { version: 3, name: "numbered-migration-ledger" },
+            { version: 4, name: "fixture-only-second-repair-capacity" },
+          ],
+          runs: { total: 1 },
+        });
+      } finally {
+        migrated.close();
+        await temporary.cleanup();
+      }
+    },
+  );
+
+  it("upgrades a genuine v1 state that predates worker invocation tables", async () => {
+    const temporary = await temporaryDirectory("mill-state-v1-history-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const directory = repositoryStateDirectory(repositoryId, temporary.path);
+    const databasePath = path.join(directory, "state.sqlite3");
+    await mkdir(path.join(directory, "worktrees"), { recursive: true });
+    const legacy = new DatabaseSync(databasePath);
+    try {
+      legacy.exec(`
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+        CREATE TABLE runs (
+          id TEXT PRIMARY KEY, repository_id TEXT NOT NULL, task_id TEXT NOT NULL,
+          task_digest TEXT NOT NULL, config_digest TEXT NOT NULL, status TEXT NOT NULL,
+          base_commit TEXT NOT NULL, worktree_path TEXT, context_digest TEXT,
+          context_json TEXT, control_json TEXT, candidate_commit TEXT,
+          candidate_tree TEXT, deadline_at TEXT NOT NULL, active_pid INTEGER,
+          cancel_requested INTEGER NOT NULL DEFAULT 0, repair_count INTEGER NOT NULL DEFAULT 0,
+          attempt_count INTEGER NOT NULL DEFAULT 0, block_code TEXT, validation_json TEXT,
+          review_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        ) STRICT;
+        CREATE TABLE run_events (
+          sequence INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(id),
+          occurred_at TEXT NOT NULL, type TEXT NOT NULL, data_json TEXT NOT NULL
+        ) STRICT;
+        CREATE TABLE baseline_qualifications (
+          approval_digest TEXT PRIMARY KEY, repository_id TEXT NOT NULL,
+          task_digest TEXT NOT NULL, config_digest TEXT NOT NULL, base_commit TEXT NOT NULL,
+          evidence_digest TEXT NOT NULL, created_at TEXT NOT NULL
+        ) STRICT;
+      `);
+      legacy
+        .prepare("INSERT INTO metadata(key, value) VALUES (?, ?)")
+        .run("schema_version", "1");
+      legacy
+        .prepare(
+          `INSERT INTO runs(
+             id, repository_id, task_id, task_digest, config_digest, status,
+             base_commit, deadline_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "v1-run",
+          repositoryId,
+          "v1-task",
+          `sha256:${"a".repeat(64)}`,
+          `sha256:${"b".repeat(64)}`,
+          "ready",
+          "c".repeat(40),
+          "2026-09-02T00:00:00.000Z",
+          "2026-09-01T00:00:00.000Z",
+          "2026-09-01T00:00:00.000Z",
+        );
+    } finally {
+      legacy.close();
+    }
+    const migrated = await StateStore.open(repositoryId, temporary.path);
+    try {
+      expect(migrated.getRun("v1-run")).toMatchObject({ taskId: "v1-task" });
+      const invocationId = startWorkerInvocation(migrated, "v1-run", "build");
+      expect(invocationId).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(migrated.stats().schemaVersion).toBe(4);
+    } finally {
+      migrated.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("upgrades the populated v0.5.0 release schema without losing its evidence", async () => {
+    const temporary = await temporaryDirectory("mill-state-v050-release-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const directory = repositoryStateDirectory(repositoryId, temporary.path);
+    const databasePath = path.join(directory, "state.sqlite3");
+    const occurredAt = "2026-09-01T00:00:00.000Z";
+    const runId = "v050-run";
+    const invocationId = "v050-invocation";
+    await mkdir(path.join(directory, "worktrees"), { recursive: true });
+    const legacy = new DatabaseSync(databasePath);
+    try {
+      legacy.exec(
+        await readFile(
+          new URL("./fixtures/state-v0.5.sql", import.meta.url),
+          "utf8",
+        ),
+      );
+      legacy.exec("PRAGMA foreign_keys = ON");
+      legacy
+        .prepare("INSERT INTO metadata(key, value) VALUES (?, ?)")
+        .run("schema_version", "3");
+      const legacyMigrations: readonly (readonly [number, string])[] = [
+        [1, "initial-durable-state"],
+        [2, "worker-and-delivery-recovery-columns"],
+        [3, "numbered-migration-ledger"],
+      ];
+      for (const [version, name] of legacyMigrations) {
+        legacy
+          .prepare(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+          )
+          .run(version, name, occurredAt);
+      }
+      legacy
+        .prepare(
+          `INSERT INTO runs(
+             id, repository_id, task_id, task_digest, config_digest, status,
+             base_commit, deadline_at, candidate_commit, candidate_tree,
+             delivery_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          runId,
+          repositoryId,
+          "v050-task",
+          `sha256:${"a".repeat(64)}`,
+          `sha256:${"b".repeat(64)}`,
+          "awaiting_human",
+          "c".repeat(40),
+          "2026-09-02T00:00:00.000Z",
+          "d".repeat(40),
+          "e".repeat(40),
+          '{"pr":42}',
+          occurredAt,
+          occurredAt,
+        );
+      legacy
+        .prepare(
+          "INSERT INTO run_events(run_id, occurred_at, type, data_json) VALUES (?, ?, ?, ?)",
+        )
+        .run(runId, occurredAt, "delivery.opened", '{"pr":42}');
+      legacy
+        .prepare(
+          "INSERT INTO worker_invocations(id, run_id, phase, envelope_digest, envelope_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          invocationId,
+          runId,
+          "review",
+          `sha256:${"f".repeat(64)}`,
+          "{}",
+          occurredAt,
+        );
+      legacy
+        .prepare(
+          "INSERT INTO worker_invocation_events(invocation_id, occurred_at, type, data_json) VALUES (?, ?, ?, ?)",
+        )
+        .run(invocationId, occurredAt, "process_exited", "{}");
+    } finally {
+      legacy.close();
+    }
+
+    const migrated = await StateStore.open(repositoryId, temporary.path);
+    try {
+      expect(migrated.stats().schemaVersion).toBe(4);
+      expect(migrated.getRun(runId)).toMatchObject({
+        taskId: "v050-task",
+        status: "awaiting_human",
+        deliveryJson: '{"pr":42}',
+      });
+      expect(migrated.events(runId)).toMatchObject([
+        { type: "delivery.opened", data: { pr: 42 } },
+      ]);
+      const upgraded = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        expect(
+          upgraded
+            .prepare("SELECT COUNT(*) AS count FROM worker_invocation_events")
+            .get(),
+        ).toEqual({ count: 1 });
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      migrated.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("blocks a future state schema before using local records", async () => {
+    const temporary = await temporaryDirectory("mill-state-schema-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const databasePath = store.databasePath;
+    store.close();
+    const database = new DatabaseSync(databasePath);
+    try {
+      database
+        .prepare("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
+        .run();
+    } finally {
+      database.close();
+    }
+    await expect(
+      StateStore.open(repositoryId, temporary.path),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_STATE_SCHEMA",
+    });
+    await temporary.cleanup();
+  });
+
+  it("does not write a migration ledger into an unsupported future state", async () => {
+    const temporary = await temporaryDirectory("mill-state-future-schema-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const databasePath = store.databasePath;
+    store.close();
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.exec("DROP TABLE schema_migrations");
+      database
+        .prepare("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
+        .run();
+    } finally {
+      database.close();
+    }
+    await expect(
+      StateStore.open(repositoryId, temporary.path),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_STATE_SCHEMA",
+    });
+    const unchanged = new DatabaseSync(databasePath);
+    try {
+      const ledger = unchanged
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+        )
+        .get();
+      expect(ledger).toBeUndefined();
+    } finally {
+      unchanged.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("blocks a current schema whose migration ledger is incomplete", async () => {
+    const temporary = await temporaryDirectory("mill-state-ledger-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const databasePath = store.databasePath;
+    store.close();
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.exec("DELETE FROM schema_migrations WHERE version = 2");
+    } finally {
+      database.close();
+    }
+    await expect(
+      StateStore.open(repositoryId, temporary.path),
+    ).rejects.toMatchObject({
+      code: "STATE_MIGRATION_INCOMPLETE",
+    });
+    await temporary.cleanup();
+  });
+
+  it("rejects a current backup whose migration ledger was tampered with", async () => {
+    const temporary = await temporaryDirectory("mill-state-backup-ledger-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const backupPath = await store.backup();
+    store.close();
+    const backup = new DatabaseSync(backupPath);
+    try {
+      backup.exec("DELETE FROM schema_migrations WHERE version = 3");
+    } finally {
+      backup.close();
+    }
+    await expect(
+      restoreStateBackup(repositoryId, temporary.path, backupPath),
+    ).rejects.toMatchObject({ code: "INVALID_STATE_BACKUP" });
+    await temporary.cleanup();
+  });
+
+  it("does not project an unknown status from corrupted local state", async () => {
+    const temporary = await temporaryDirectory("mill-state-status-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const run = store.createRun({
+      repositoryId,
+      taskId: "status-check",
+      taskDigest: `sha256:${"a".repeat(64)}`,
+      configDigest: `sha256:${"b".repeat(64)}`,
+      baseCommit: "c".repeat(40),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const databasePath = store.databasePath;
+    store.close();
+    const database = new DatabaseSync(databasePath);
+    try {
+      database
+        .prepare("UPDATE runs SET status = 'unknown' WHERE id = ?")
+        .run(run.id);
+    } finally {
+      database.close();
+    }
+    const reopened = await StateStore.open(repositoryId, temporary.path);
+    try {
+      expect(() => reopened.stats()).toThrow(/unknown run status/u);
+    } finally {
+      reopened.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("backs up authority intents, rejects poisoned paths and prevents uncommitted purge", async () => {
+    const temporary = await temporaryDirectory("mill-authority-state-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const digest = `sha256:${"a".repeat(64)}`;
+    const worktreePath = path.join(
+      store.worktreesDirectory,
+      `native-${"a".repeat(64)}`,
+    );
+    const record = {
+      kind: "native_adoption" as const,
+      approvalDigest: digest,
+      baseCommit: "b".repeat(40),
+      worktreePath,
+      state: "intent" as const,
+      branch: "mill/native-adoption-aaaaaaaa",
+      files: [{ path: "mill.yaml", digest }],
+    };
+    try {
+      expect(() =>
+        store.beginAuthorityPlan(
+          { ...record, worktreePath: temporary.path },
+          "DUPLICATE",
+        ),
+      ).toThrow();
+      store.beginAuthorityPlan(record, "DUPLICATE");
+      expect(() => store.beginAuthorityPlan(record, "DUPLICATE")).toThrow();
+      expect(() =>
+        store.settleAuthorityPlan(digest, { branch: "mill/wrong" }),
+      ).toThrow();
+      await mkdir(worktreePath);
+      const backupPath = await store.backup();
+      store.close();
+      expect(
+        (await restoreStateBackup(repositoryId, temporary.path, backupPath))
+          .quarantinedCount,
+      ).toBe(0);
+      await expect(
+        purgeRepositoryState(repositoryId, temporary.path),
+      ).rejects.toMatchObject({ code: "AUTHORITY_PLANS_BLOCK_PURGE" });
+      const poisoned = new DatabaseSync(backupPath);
+      poisoned
+        .prepare("UPDATE metadata SET value = ? WHERE key = ?")
+        .run(
+          JSON.stringify({ ...record, worktreePath: temporary.path }),
+          `authority_plan:${digest}`,
+        );
+      poisoned.close();
+      await expect(
+        restoreStateBackup(repositoryId, temporary.path, backupPath),
+      ).rejects.toMatchObject({ code: "INVALID_STATE_BACKUP" });
+      await expect(access(worktreePath)).resolves.toBeUndefined();
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+  it("persists transactional transitions and append-only redacted events with user-only permissions", async () => {
+    const temporary = await temporaryDirectory("mill-state-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const store = await StateStore.open(
+      "11111111-1111-4111-8111-111111111111",
+      temporary.path,
+    );
+    try {
+      const run = store.createRun({
+        repositoryId: "11111111-1111-4111-8111-111111111111",
+        taskId: "task",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      store.transition(run.id, "ready", "run.ready");
+      expect(store.getRun(run.id).status).toBe("ready");
+      expect(store.events(run.id).map((event) => event.type)).toEqual([
+        "run.created",
+        "run.ready",
+      ]);
+      expect(store.runEventSnapshot(run.id)).toMatchObject({
+        run: { id: run.id, status: "ready" },
+        events: [{ type: "run.created" }, { type: "run.ready" }],
+      });
+      const corruptJournal = new DatabaseSync(store.databasePath);
+      try {
+        corruptJournal
+          .prepare(
+            "INSERT INTO run_events(run_id, occurred_at, type, data_json) VALUES (?, ?, ?, ?)",
+          )
+          .run(
+            run.id,
+            new Date().toISOString(),
+            "worker.admitted",
+            JSON.stringify("private-marker"),
+          );
+      } finally {
+        corruptJournal.close();
+      }
+      const sanitizedSnapshot = store.runEventSnapshot(run.id);
+      expect(JSON.stringify(sanitizedSnapshot)).not.toContain("private-marker");
+      expect(sanitizedSnapshot.events.at(-1)).toMatchObject({
+        type: "worker.admitted",
+        journalDataInvalid: true,
+      });
+      expect((await stat(store.directory)).mode & 0o777).toBe(0o700);
+      expect((await stat(store.databasePath)).mode & 0o777).toBe(0o600);
+      const backup = await store.backup();
+      expect((await stat(backup)).mode & 0o777).toBe(0o600);
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("permits only one live writer lease", async () => {
+    const temporary = await temporaryDirectory("mill-writer-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const store = await StateStore.open(
+      "11111111-1111-4111-8111-111111111111",
+      temporary.path,
+    );
+    try {
+      const lease = await acquireWriterLease(store);
+      await expect(acquireWriterLease(store)).rejects.toMatchObject({
+        code: "WRITER_ALREADY_ACTIVE",
+      });
+      await lease.release();
+      const next = await acquireWriterLease(store);
+      await next.release();
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("admits immutable worker invocations before launch and never replays a possible start", async () => {
+    const temporary = await temporaryDirectory("mill-worker-admission-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    try {
+      const run = store.createRun({
+        repositoryId,
+        taskId: "worker-admission",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const invocationId = randomUUID();
+      const admission = {
+        runId: run.id,
+        invocationId,
+        phase: "build",
+        envelopeDigest: `sha256:${"d".repeat(64)}`,
+        envelopeJson: '{"redacted":true}',
+      };
+      expect(store.admitWorkerInvocation(admission)).toBe("created");
+      expect(store.admitWorkerInvocation(admission)).toBe("existing");
+      expect(store.workerInvocationStatus(invocationId)).toBe("admitted");
+      expect(() =>
+        store.admitWorkerInvocation({
+          ...admission,
+          envelopeDigest: `sha256:${"e".repeat(64)}`,
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          code: "WORKER_INVOCATION_IDENTITY_CONFLICT",
+        }),
+      );
+
+      store.markWorkerLaunchStarted(invocationId);
+      expect(store.workerInvocationStatus(invocationId)).toBe("launch_started");
+      expect(() => store.markWorkerLaunchStarted(invocationId)).toThrow(
+        expect.objectContaining({ code: "WORKER_INVOCATION_POSSIBLY_STARTED" }),
+      );
+      store.settleWorkerInvocation(invocationId, "completed");
+      expect(store.workerInvocationStatus(invocationId)).toBe("settled");
+      expect(() =>
+        store.settleWorkerInvocation(invocationId, "completed"),
+      ).toThrow(
+        expect.objectContaining({
+          code: "WORKER_INVOCATION_SETTLEMENT_CONFLICT",
+        }),
+      );
+
+      const uncertainId = randomUUID();
+      store.admitWorkerInvocation({
+        ...admission,
+        invocationId: uncertainId,
+        envelopeDigest: `sha256:${"f".repeat(64)}`,
+      });
+      store.markWorkerLaunchStarted(uncertainId);
+      store.settleWorkerInvocation(uncertainId, "uncertain", {
+        code: "CODEX_EXECUTION_FAILED",
+        processExited: true,
+      });
+      expect(store.workerInvocationStatus(uncertainId)).toBe("uncertain");
+      expect(store.unresolvedMutatingWorkerInvocations(run.id)).toEqual([
+        {
+          invocationId: uncertainId,
+          phase: "build",
+          status: "uncertain",
+          processExited: true,
+        },
+      ]);
+      store.reconcileWorkerInvocation(
+        run.id,
+        uncertainId,
+        "process_exit_observed",
+      );
+      expect(store.workerInvocationStatus(uncertainId)).toBe("reconciled");
+      expect(store.unresolvedMutatingWorkerInvocations(run.id)).toEqual([]);
+      expect(store.events(run.id).map((event) => event.type)).toEqual([
+        "run.created",
+        "worker.admitted",
+        "worker.admitted",
+        "worker.reconciled",
+      ]);
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("records worker exit and clears its process binding atomically", async () => {
+    const temporary = await temporaryDirectory("mill-worker-exit-atomic-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    try {
+      const run = store.createRun({
+        repositoryId,
+        taskId: "worker-exit",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      const invocationId = randomUUID();
+      store.admitWorkerInvocation({
+        runId: run.id,
+        invocationId,
+        phase: "build",
+        envelopeDigest: `sha256:${"d".repeat(64)}`,
+        envelopeJson: '{"redacted":true}',
+      });
+      store.markWorkerLaunchStarted(invocationId);
+      const processId = randomUUID();
+      store.setActiveProcess(run.id, {
+        id: processId,
+        pid: 1234,
+        processGroup: 1234,
+        identity: `sha256:${"e".repeat(64)}`,
+      });
+
+      store.recordWorkerProcessExit(run.id, invocationId, processId);
+
+      const exitedRun = store.getRun(run.id);
+      expect(exitedRun.activeProcessId).toBeUndefined();
+      expect(exitedRun.activePid).toBeUndefined();
+      expect(store.unresolvedMutatingWorkerInvocations(run.id)).toEqual([
+        {
+          invocationId,
+          phase: "build",
+          status: "launch_started",
+          processExited: true,
+        },
+      ]);
+      store.reconcileWorkerInvocation(
+        run.id,
+        invocationId,
+        "process_exit_observed",
+      );
+      expect(store.workerInvocationStatus(invocationId)).toBe("reconciled");
+      expect(store.events(run.id).map((event) => event.type)).toContain(
+        "worker.process_exited",
+      );
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("publishes candidate identity and mutating-worker settlement atomically", async () => {
+    const temporary = await temporaryDirectory("mill-worker-candidate-atomic-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    try {
+      const run = store.createRun({
+        repositoryId,
+        taskId: "atomic-candidate",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      store.transition(run.id, "ready", "run.ready");
+      store.transition(run.id, "running", "builder.started");
+      const invocationId = randomUUID();
+      store.admitWorkerInvocation({
+        runId: run.id,
+        invocationId,
+        phase: "build",
+        envelopeDigest: `sha256:${"d".repeat(64)}`,
+        envelopeJson: '{"redacted":true}',
+      });
+      store.markWorkerLaunchStarted(invocationId);
+      expect(() =>
+        store.commitCandidate(
+          run.id,
+          "e".repeat(40),
+          "f".repeat(40),
+          randomUUID(),
+        ),
+      ).toThrow(
+        expect.objectContaining({
+          code: "WORKER_INVOCATION_SETTLEMENT_CONFLICT",
+        }),
+      );
+      expect(store.getRun(run.id)).toMatchObject({ status: "running" });
+      expect(store.getRun(run.id)).not.toHaveProperty("candidateCommit");
+      expect(store.workerInvocationStatus(invocationId)).toBe("launch_started");
+      const committed = store.commitCandidate(
+        run.id,
+        "e".repeat(40),
+        "f".repeat(40),
+        invocationId,
+      );
+      expect(committed).toMatchObject({
+        status: "committed",
+        candidateCommit: "e".repeat(40),
+        candidateTree: "f".repeat(40),
+      });
+      expect(store.workerInvocationStatus(invocationId)).toBe("settled");
+      expect(store.unresolvedMutatingWorkerInvocations(run.id)).toEqual([]);
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("publishes exact review evidence and reviewer settlement atomically", async () => {
+    const temporary = await temporaryDirectory("mill-worker-review-atomic-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    try {
+      const run = store.createRun({
+        repositoryId,
+        taskId: "atomic-review",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      store.transition(run.id, "ready", "run.ready");
+      store.transition(run.id, "running", "builder.started");
+      store.commitCandidate(run.id, "e".repeat(40), "f".repeat(40));
+      store.completeValidation(run.id, '{"passed":true}', true);
+      store.beginReviewAttempt(run.id, 1);
+      const invocationId = startWorkerInvocation(store, run.id, "review");
+      expect(() =>
+        store.completeReview(run.id, stateReview("e"), 0, false, randomUUID()),
+      ).toThrow(
+        expect.objectContaining({
+          code: "WORKER_INVOCATION_SETTLEMENT_CONFLICT",
+        }),
+      );
+      expect(store.getRun(run.id)).toMatchObject({ status: "verified" });
+      expect(store.getRun(run.id)).not.toHaveProperty("reviewJson");
+      expect(store.workerInvocationStatus(invocationId)).toBe("launch_started");
+      expect(
+        store.completeReview(run.id, stateReview("e"), 0, false, invocationId),
+      ).toMatchObject({
+        status: "reviewed",
+        reviewJson: stateReview("e"),
+      });
+      expect(store.workerInvocationStatus(invocationId)).toBe("settled");
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("enforces transition, retry, validation, review, and cancellation invariants", async () => {
+    const temporary = await temporaryDirectory("mill-state-machine-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const create = () =>
+      store.createRun({
+        repositoryId,
+        taskId: "task",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    try {
+      expect(store.latestRun()).toBeUndefined();
+      expect(() => store.getRun("missing")).toThrow(
+        expect.objectContaining({ code: "RUN_NOT_FOUND" }),
+      );
+      const failedValidation = create();
+      expect(() =>
+        store.transition(failedValidation.id, "reviewed", "invalid"),
+      ).toThrow(expect.objectContaining({ code: "INVALID_RUN_TRANSITION" }));
+      store.transition(failedValidation.id, "ready", "ready");
+      store.setWorkspace(
+        failedValidation.id,
+        "/tmp/worktree",
+        `sha256:${"d".repeat(64)}`,
+        "{}",
+        "{}",
+      );
+      expect(() =>
+        store.setWorkspace(
+          failedValidation.id,
+          "/tmp/other",
+          `sha256:${"e".repeat(64)}`,
+          "{}",
+          "{}",
+        ),
+      ).toThrow(expect.objectContaining({ code: "INVALID_RUN_TRANSITION" }));
+      store.transition(failedValidation.id, "running", "running");
+      store.beginBuilderAttempt(failedValidation.id, 1);
+      expect(() => store.beginBuilderAttempt(failedValidation.id, 1)).toThrow(
+        expect.objectContaining({ code: "BUILDER_RETRY_BUDGET_EXHAUSTED" }),
+      );
+      store.commitCandidate(
+        failedValidation.id,
+        "e".repeat(40),
+        "f".repeat(40),
+      );
+      const blocked = store.completeValidation(
+        failedValidation.id,
+        '{"passed":false}',
+        false,
+      );
+      expect(blocked).toMatchObject({
+        status: "blocked",
+        blockCode: "VALIDATION_FAILED",
+        worktreePath: "/tmp/worktree",
+      });
+      store.beginRepair(blocked.id);
+      expect(() => store.beginRepair(blocked.id)).toThrow(
+        expect.objectContaining({ code: "REPAIR_BUDGET_EXHAUSTED" }),
+      );
+
+      const fixtureOnlyRepair = create();
+      store.transition(fixtureOnlyRepair.id, "ready", "ready");
+      store.transition(fixtureOnlyRepair.id, "running", "running");
+      store.commitCandidate(
+        fixtureOnlyRepair.id,
+        "9".repeat(40),
+        "a".repeat(40),
+      );
+      store.completeValidation(fixtureOnlyRepair.id, '{"passed":false}', false);
+      store.beginRepair(fixtureOnlyRepair.id, 2);
+      store.commitCandidate(
+        fixtureOnlyRepair.id,
+        "b".repeat(40),
+        "c".repeat(40),
+      );
+      store.completeValidation(fixtureOnlyRepair.id, '{"passed":false}', false);
+      store.beginRepair(fixtureOnlyRepair.id, 2);
+      expect(() => store.beginRepair(fixtureOnlyRepair.id, 2)).toThrow(
+        expect.objectContaining({ code: "REPAIR_BUDGET_EXHAUSTED" }),
+      );
+      expect(() => store.beginRepair(fixtureOnlyRepair.id, 3)).toThrow(
+        expect.objectContaining({ code: "INVALID_REPAIR_BUDGET" }),
+      );
+
+      const reviewed = create();
+      store.transition(reviewed.id, "ready", "ready");
+      store.transition(reviewed.id, "running", "running");
+      store.commitCandidate(reviewed.id, "1".repeat(40), "2".repeat(40));
+      store.completeValidation(reviewed.id, '{"passed":true}', true);
+      expect(store.beginReviewAttempt(reviewed.id, 1)).toBe(1);
+      expect(() => store.beginReviewAttempt(reviewed.id, 1)).toThrow(
+        expect.objectContaining({ code: "REVIEW_RETRY_BUDGET_EXHAUSTED" }),
+      );
+      const reviewRetry = create();
+      store.transition(reviewRetry.id, "ready", "ready");
+      store.transition(reviewRetry.id, "running", "running");
+      store.commitCandidate(reviewRetry.id, "7".repeat(40), "8".repeat(40));
+      store.completeValidation(reviewRetry.id, '{"passed":true}', true);
+      expect(store.beginReviewAttempt(reviewRetry.id, 2)).toBe(1);
+      expect(store.beginReviewAttempt(reviewRetry.id, 2)).toBe(2);
+      const findings = store.completeReview(
+        reviewed.id,
+        stateReview("1", true),
+        1,
+        false,
+        startWorkerInvocation(store, reviewed.id, "review"),
+      );
+      expect(findings).toMatchObject({
+        status: "blocked",
+        blockCode: "REVIEW_FINDINGS",
+      });
+      store.beginRepair(findings.id);
+      store.commitCandidate(findings.id, "5".repeat(40), "6".repeat(40));
+      store.completeValidation(findings.id, '{"passed":true}', true);
+      expect(store.beginReviewAttempt(findings.id, 1)).toBe(1);
+      expect(() => store.beginReviewAttempt(findings.id, 1)).toThrow(
+        expect.objectContaining({ code: "REVIEW_RETRY_BUDGET_EXHAUSTED" }),
+      );
+
+      const nonConverged = create();
+      store.transition(nonConverged.id, "ready", "ready");
+      store.transition(nonConverged.id, "running", "running");
+      store.commitCandidate(nonConverged.id, "3".repeat(40), "4".repeat(40));
+      store.completeValidation(nonConverged.id, '{"passed":true}', true);
+      expect(
+        store.completeReview(
+          nonConverged.id,
+          stateReview("3", true),
+          1,
+          true,
+          startWorkerInvocation(store, nonConverged.id, "review"),
+        ),
+      ).toMatchObject({
+        status: "blocked",
+        blockCode: "REVIEW_NON_CONVERGENCE",
+      });
+
+      const cancelled = create();
+      const requested = store.requestCancellation(cancelled.id);
+      expect(requested.cancelRequested).toBe(true);
+      store.transition(cancelled.id, "cancelled", "cancelled");
+      expect(store.requestCancellation(cancelled.id).status).toBe("cancelled");
+
+      const awaitingHuman = create();
+      store.transition(awaitingHuman.id, "ready", "ready");
+      store.transition(awaitingHuman.id, "running", "running");
+      store.commitCandidate(awaitingHuman.id, "d".repeat(40), "e".repeat(40));
+      store.completeValidation(awaitingHuman.id, '{"passed":true}', true);
+      store.completeReview(
+        awaitingHuman.id,
+        stateReview("d"),
+        0,
+        false,
+        startWorkerInvocation(store, awaitingHuman.id, "review"),
+      );
+      store.transition(awaitingHuman.id, "proposing", "delivery.planned");
+      store.transition(awaitingHuman.id, "awaiting_ci", "delivery.opened");
+      store.transition(awaitingHuman.id, "awaiting_human", "delivery.ready");
+      store.requestCancellation(awaitingHuman.id);
+      expect(
+        store.transition(awaitingHuman.id, "cancelled", "run.cancelled"),
+      ).toMatchObject({ status: "cancelled", cancelRequested: true });
+      expect(store.runs()).toHaveLength(7);
+    } finally {
+      store.close();
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("binds and clears active executions with cancellation-dominant compare-and-swap", async () => {
+    const temporary = await temporaryDirectory("mill-state-active-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const store = await StateStore.open(
+      "11111111-1111-4111-8111-111111111111",
+      temporary.path,
+    );
+    const create = () =>
+      store.createRun({
+        repositoryId: "11111111-1111-4111-8111-111111111111",
+        taskId: "active",
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    try {
+      const first = create();
+      const attemptId = randomUUID();
+      store.setActiveProcess(first.id, {
+        id: attemptId,
+        pid: 12345,
+        processGroup: 12345,
+        identity: `sha256:${"d".repeat(64)}`,
+      });
+      store.clearActiveProcess(first.id, randomUUID());
+      expect(store.getRun(first.id).activeProcessId).toBe(attemptId);
+      store.clearActiveProcess(first.id, attemptId);
+      expect(store.getRun(first.id)).not.toHaveProperty("activeProcessId");
+
+      const cancelled = create();
+      store.requestCancellation(cancelled.id);
+      expect(() =>
+        store.setActiveProcess(cancelled.id, {
+          id: randomUUID(),
+          pid: 54321,
+          processGroup: 54321,
+          identity: `sha256:${"e".repeat(64)}`,
+        }),
+      ).toThrow(
+        expect.objectContaining({ code: "ACTIVE_PROCESS_BINDING_REJECTED" }),
+      );
+      expect(() => store.beginBuilderAttempt(cancelled.id, 1)).toThrow(
+        expect.objectContaining({ code: "OPERATOR_CANCELLED" }),
+      );
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("prevents cancelled runs from publishing candidate or evidence state", async () => {
+    const temporary = await temporaryDirectory("mill-state-cancel-race-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const create = (taskId: string) =>
+      store.createRun({
+        repositoryId,
+        taskId,
+        taskDigest: `sha256:${"a".repeat(64)}`,
+        configDigest: `sha256:${"b".repeat(64)}`,
+        baseCommit: "c".repeat(40),
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+    const advanceToRunning = (taskId: string) => {
+      const run = create(taskId);
+      store.transition(run.id, "ready", "run.ready");
+      store.transition(run.id, "running", "run.running");
+      return run;
+    };
+    const advanceToCommitted = (taskId: string) => {
+      const run = advanceToRunning(taskId);
+      store.commitCandidate(run.id, "d".repeat(40), "e".repeat(40));
+      return run;
+    };
+    const advanceToVerified = (taskId: string) => {
+      const run = advanceToCommitted(taskId);
+      store.completeValidation(run.id, '{"passed":true}', true);
+      return run;
+    };
+    const expectCancellationToWin = (operation: () => unknown) => {
+      expect(operation).toThrow(
+        expect.objectContaining({ code: "OPERATOR_CANCELLED" }),
+      );
+    };
+    try {
+      const candidate = advanceToRunning("candidate-race");
+      store.requestCancellation(candidate.id);
+      expectCancellationToWin(() =>
+        store.commitCandidate(candidate.id, "f".repeat(40), "0".repeat(40)),
+      );
+
+      const validation = advanceToCommitted("validation-race");
+      store.requestCancellation(validation.id);
+      expectCancellationToWin(() =>
+        store.completeValidation(validation.id, '{"passed":true}', true),
+      );
+
+      const reviewAttempt = advanceToVerified("review-attempt-race");
+      store.requestCancellation(reviewAttempt.id);
+      expectCancellationToWin(() =>
+        store.beginReviewAttempt(reviewAttempt.id, 1),
+      );
+
+      const reviewEvidence = advanceToVerified("review-evidence-race");
+      const reviewInvocation = startWorkerInvocation(
+        store,
+        reviewEvidence.id,
+        "review",
+      );
+      store.requestCancellation(reviewEvidence.id);
+      expectCancellationToWin(() =>
+        store.completeReview(
+          reviewEvidence.id,
+          stateReview("e"),
+          0,
+          false,
+          reviewInvocation,
+        ),
+      );
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("restores only a validated, nonsymlink Mill-owned database", async () => {
+    const temporary = await temporaryDirectory("mill-state-restore-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const run = store.createRun({
+      repositoryId,
+      taskId: "restore",
+      taskDigest: `sha256:${"a".repeat(64)}`,
+      configDigest: `sha256:${"b".repeat(64)}`,
+      baseCommit: "c".repeat(40),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const directory = store.directory;
+    const databasePath = store.databasePath;
+    const backup = await store.backup();
+    store.close();
+    try {
+      await writeFile(`${databasePath}-wal`, "stale");
+      await writeFile(`${databasePath}-shm`, "stale");
+      await restoreStateBackup(repositoryId, temporary.path, backup);
+      const restored = await StateStore.open(repositoryId, temporary.path);
+      expect(restored.getRun(run.id).taskId).toBe("restore");
+      restored.close();
+      await expect(access(`${databasePath}-wal`)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(access(`${databasePath}-shm`)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const invalid = path.join(directory, "state-backup-invalid.sqlite3");
+      await writeFile(invalid, "not a database\n");
+      await expect(
+        restoreStateBackup(repositoryId, temporary.path, invalid),
+      ).rejects.toMatchObject({ code: "INVALID_STATE_BACKUP" });
+
+      const linked = path.join(directory, "state-backup-linked.sqlite3");
+      await symlink(backup, linked);
+      await expect(
+        restoreStateBackup(repositoryId, temporary.path, linked),
+      ).rejects.toMatchObject({ code: "INVALID_STATE_BACKUP" });
+    } finally {
+      await temporary.cleanup();
+    }
+  });
+
+  it("quarantines worktrees absent from an older restored backup", async () => {
+    const temporary = await temporaryDirectory("mill-state-restore-orphan-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    const backup = await store.backup();
+    const newerWorktree = path.join(store.worktreesDirectory, "newer-run");
+    await mkdir(newerWorktree);
+    store.close();
+    try {
+      const result = await restoreStateBackup(
+        repositoryId,
+        temporary.path,
+        backup,
+      );
+      expect(result.quarantinedCount).toBe(1);
+      expect(result.quarantineManifest).toBeDefined();
+      await expect(access(newerWorktree)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      const manifestPath = result.quarantineManifest;
+      expect(manifestPath).toBeDefined();
+      if (manifestPath === undefined) throw new Error("manifest missing");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+        protocol: string;
+        worktrees: { original: string; quarantined: string }[];
+      };
+      expect(manifest.protocol).toBe("database_swap_commit_point");
+      expect(manifest.worktrees).toHaveLength(1);
+      expect(manifest.worktrees[0]?.original).toBe(newerWorktree);
+      const quarantined = manifest.worktrees[0]?.quarantined;
+      expect(quarantined).toBeDefined();
+      if (quarantined === undefined) throw new Error("worktree missing");
+      const quarantineStat = await stat(quarantined);
+      expect(quarantineStat.mode).toEqual(expect.any(Number));
+    } finally {
+      await temporary.cleanup();
+    }
+  });
+
+  it("uses an OS-released SQLite lease and fails closed for corrupt lease state", async () => {
+    const temporary = await temporaryDirectory("mill-state-recovery-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    const repositoryId = "11111111-1111-4111-8111-111111111111";
+    const store = await StateStore.open(repositoryId, temporary.path);
+    try {
+      const leasePath = path.join(store.directory, "writer-lease.sqlite3");
+      const child = spawn(
+        process.execPath,
+        [
+          "-e",
+          `const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.argv[1]);db.exec("PRAGMA journal_mode=DELETE;CREATE TABLE IF NOT EXISTS lease_anchor(singleton INTEGER PRIMARY KEY) STRICT;BEGIN EXCLUSIVE");process.stdout.write("ready\\n");setInterval(()=>{},1000);`,
+          leasePath,
+        ],
+        { stdio: ["ignore", "pipe", "inherit"] },
+      );
+      await once(child.stdout, "data");
+      await expect(acquireWriterLease(store)).rejects.toMatchObject({
+        code: "WRITER_ALREADY_ACTIVE",
+      });
+      child.kill("SIGKILL");
+      await once(child, "close");
+      const recovered = await acquireWriterLease(store);
+      await recovered.release();
+
+      await expect(
+        restoreStateBackup(
+          repositoryId,
+          temporary.path,
+          "/tmp/not-mill.sqlite3",
+        ),
+      ).rejects.toMatchObject({ code: "INVALID_STATE_BACKUP" });
+      await writeFile(leasePath, "not-a-sqlite-database\n");
+      await expect(acquireWriterLease(store)).rejects.toMatchObject({
+        code: "WRITER_LEASE_UNAVAILABLE",
+      });
+    } finally {
+      store.close();
+      await temporary.cleanup();
+    }
+  });
+
+  it("rejects relative state homes and treats absent purge state as complete", async () => {
+    process.env.MILL_STATE_HOME = "relative-state";
+    expect(() =>
+      repositoryStateDirectory(
+        "11111111-1111-4111-8111-111111111111",
+        "/tmp/repository",
+      ),
+    ).toThrow(expect.objectContaining({ code: "INVALID_STATE_HOME" }));
+
+    const temporary = await temporaryDirectory("mill-state-absent-");
+    process.env.MILL_STATE_HOME = temporary.path;
+    try {
+      await expect(
+        purgeRepositoryState(
+          "11111111-1111-4111-8111-111111111111",
+          "/tmp/repository",
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await temporary.cleanup();
+    }
+  });
+});

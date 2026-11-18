@@ -1,0 +1,2595 @@
+import {
+  verificationRecoverySchema,
+  assertRecoveryBinding,
+  recoveryCheckpoint,
+  recoveryDigest,
+  eligibleVerificationFailure,
+  recoveryError,
+  type VerificationRecovery,
+} from "./verification-recovery.js";
+import { externalEvidenceDeadlineMs } from "../../scripts/promotion-readiness.mjs";
+import {
+  assertReviewWindow,
+  type ReviewWindow,
+} from "./verification-authority.js";
+import { blockingReviewFindings } from "./review-policy.js";
+import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import {
+  access,
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
+import { z } from "zod";
+import { canonicalDigest, type JsonValue } from "../contracts/canonical.js";
+import {
+  deliveryRecordSchema,
+  type localCompletionPlanSchema,
+  localCompletionReceiptSchema,
+  reviewResultSchema,
+  reviewScopeSchema,
+  validationEvidenceSchema,
+} from "../contracts/schemas.js";
+
+import { ExitCode, MillError } from "../errors.js";
+import { isWithin } from "../security/safe-path.js";
+import { localCompletionForRun } from "./local-completion-evidence.js";
+import { acquireExclusiveLease, type ExclusiveLease } from "./lease.js";
+import {
+  acquireOciResourceLease,
+  assertOciLease,
+  assertOciResourcesSettled,
+  type OciResourceLease,
+} from "./oci-resources.js";
+import {
+  applyStateMigrations,
+  assertCurrentStateMigrations,
+  assertPhysicalStateSchema,
+  CURRENT_STATE_SCHEMA_VERSION,
+  stateSchemaVersion,
+  stateMigrationHistory,
+  type AppliedStateMigration,
+} from "./state-migrations.js";
+import {
+  assertEffectAllowsNewWork,
+  externalEffectBoundary,
+  reconcilableDraftEffect,
+  maximumRemoteEffectAttempts,
+} from "./effect-boundary.js";
+
+const authorityPlanSchema = z
+  .object({
+    kind: z.enum(["tasks", "native_adoption"]),
+    approvalDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    baseCommit: z.string().regex(/^[a-f0-9]{40}$/u),
+    worktreePath: z.string(),
+    state: z.enum(["intent", "applied", "committed", "abandoned"]),
+    branch: z
+      .string()
+      .regex(/^mill\/[a-zA-Z0-9._-]+$/u)
+      .optional(),
+    committedCommit: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/u)
+      .optional(),
+    purgeCommit: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/u)
+      .optional(),
+    abandonedCommit: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/u)
+      .optional(),
+    files: z
+      .array(
+        z
+          .object({
+            path: z
+              .string()
+              .regex(/^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[a-zA-Z0-9_./-]+$/u),
+            digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+          })
+          .strict(),
+      )
+      .min(1),
+  })
+  .strict();
+
+export type AuthorityPlanRecord = z.infer<typeof authorityPlanSchema>;
+
+export function isSettledAuthorityPlan(plan: AuthorityPlanRecord): boolean {
+  return plan.state === "committed" || plan.state === "abandoned";
+}
+
+function parseAuthorityPlan(
+  value: unknown,
+  directory: string,
+): AuthorityPlanRecord {
+  const record = authorityPlanSchema.parse(value);
+  const prefix = record.kind === "tasks" ? "plan-" : "native-";
+  const expected = path.join(
+    directory,
+    "worktrees",
+    `${prefix}${record.approvalDigest.slice(7)}`,
+  );
+  if (
+    record.worktreePath !== expected ||
+    (record.state !== "intent" && record.branch === undefined) ||
+    (record.state === "committed" && record.committedCommit === undefined) ||
+    (record.state === "abandoned" && record.abandonedCommit === undefined) ||
+    (record.abandonedCommit !== undefined && record.state !== "abandoned") ||
+    (record.purgeCommit !== undefined && !isSettledAuthorityPlan(record))
+  )
+    throw new MillError(
+      "INVALID_AUTHORITY_PLAN",
+      "Authority plan identity or worktree binding is invalid.",
+      ExitCode.data,
+    );
+  return record;
+}
+
+export type RunStatus =
+  | "approved"
+  | "ready"
+  | "running"
+  | "committed"
+  | "verified"
+  | "reviewed"
+  | "local_completed"
+  | "proposing"
+  | "effect_unknown"
+  | "awaiting_ci"
+  | "awaiting_human"
+  | "merged"
+  | "post_merge_verified"
+  | "closed"
+  | "blocked"
+  | "cancelled"
+  | "failed"
+  | "stale";
+
+export interface RunRecord {
+  id: string;
+  repositoryId: string;
+  taskId: string;
+  taskDigest: string;
+  configDigest: string;
+  status: RunStatus;
+  baseCommit: string;
+  worktreePath?: string;
+  contextDigest?: string;
+  contextJson?: string;
+  controlJson?: string;
+  candidateCommit?: string;
+  candidateTree?: string;
+  deadlineAt: string;
+  activeProcessId?: string;
+  activePid?: number;
+  activeProcessGroup?: number;
+  activeProcessIdentity?: string;
+  cancelRequested: boolean;
+  repairCount: number;
+  attemptCount: number;
+  blockCode?: string;
+  validationJson?: string;
+  reviewJson?: string;
+  deliveryJson?: string;
+  remoteFeedbackJson?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PublicRunRecord = Omit<
+  RunRecord,
+  | "worktreePath"
+  | "contextJson"
+  | "controlJson"
+  | "activeProcessId"
+  | "activeProcessGroup"
+  | "activeProcessIdentity"
+  | "deliveryJson"
+  | "remoteFeedbackJson"
+  | "validationJson"
+  | "reviewJson"
+>;
+
+export interface StateStats {
+  schemaVersion: number;
+  migrations: AppliedStateMigration[];
+  runs: {
+    total: number;
+    byStatus: Record<RunStatus, number>;
+    builderAttempts: number;
+    repairs: number;
+  };
+}
+
+export function publicRunRecord(run: RunRecord): PublicRunRecord {
+  const publicRun = { ...run };
+  delete publicRun.worktreePath;
+  delete publicRun.contextJson;
+  delete publicRun.controlJson;
+  delete publicRun.activeProcessId;
+  delete publicRun.activeProcessGroup;
+  delete publicRun.activeProcessIdentity;
+  delete publicRun.deliveryJson;
+  delete publicRun.remoteFeedbackJson;
+  delete publicRun.validationJson;
+  delete publicRun.reviewJson;
+  return publicRun;
+}
+
+interface RunRow {
+  id: string;
+  repository_id: string;
+  task_id: string;
+  task_digest: string;
+  config_digest: string;
+  status: RunStatus;
+  base_commit: string;
+  worktree_path: string | null;
+  context_digest: string | null;
+  context_json: string | null;
+  control_json: string | null;
+  candidate_commit: string | null;
+  candidate_tree: string | null;
+  deadline_at: string;
+  active_process_id: string | null;
+  active_pid: number | null;
+  active_process_group: number | null;
+  active_process_identity: string | null;
+  cancel_requested: number;
+  repair_count: number;
+  attempt_count: number;
+  block_code: string | null;
+  validation_json: string | null;
+  review_json: string | null;
+  delivery_json: string | null;
+  remote_feedback_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+const runStatuses = [
+  "approved",
+  "ready",
+  "running",
+  "committed",
+  "verified",
+  "reviewed",
+  "local_completed",
+  "proposing",
+  "effect_unknown",
+  "awaiting_ci",
+  "awaiting_human",
+  "merged",
+  "post_merge_verified",
+  "closed",
+  "blocked",
+  "cancelled",
+  "failed",
+  "stale",
+] as const satisfies readonly RunStatus[];
+
+const terminal = new Set<RunStatus>([
+  "local_completed",
+  "closed",
+  "cancelled",
+  "failed",
+  "stale",
+]);
+
+export function isTerminalRun(status: RunStatus): boolean {
+  return terminal.has(status);
+}
+
+export function isPurgeSafeRun(status: RunStatus): boolean {
+  return status === "reviewed" || isTerminalRun(status);
+}
+
+const transitions: Readonly<Record<RunStatus, readonly RunStatus[]>> = {
+  approved: ["ready", "blocked", "cancelled", "failed"],
+  ready: ["running", "blocked", "cancelled", "failed", "stale"],
+  running: ["committed", "blocked", "cancelled", "failed", "stale"],
+  committed: ["verified", "blocked", "cancelled", "failed", "stale"],
+  verified: ["reviewed", "blocked", "cancelled", "failed", "stale"],
+  reviewed: ["local_completed", "proposing", "cancelled", "failed", "stale"],
+  local_completed: [],
+  proposing: [
+    "effect_unknown",
+    "awaiting_ci",
+    "blocked",
+    "cancelled",
+    "failed",
+    "stale",
+  ],
+  effect_unknown: [
+    "proposing",
+    "awaiting_ci",
+    "blocked",
+    "cancelled",
+    "failed",
+    "stale",
+  ],
+  awaiting_ci: [
+    "awaiting_human",
+    "blocked",
+    "effect_unknown",
+    "cancelled",
+    "failed",
+    "stale",
+  ],
+  awaiting_human: [
+    "awaiting_ci",
+    "merged",
+    "blocked",
+    "cancelled",
+    "failed",
+    "stale",
+  ],
+  merged: ["post_merge_verified", "blocked", "failed", "stale"],
+  post_merge_verified: ["closed", "blocked", "failed", "stale"],
+  closed: [],
+  blocked: [
+    "ready",
+    "running",
+    "committed",
+    "verified",
+    "proposing",
+    "awaiting_ci",
+    "awaiting_human",
+    "merged",
+    "post_merge_verified",
+    "cancelled",
+    "failed",
+    "stale",
+  ],
+  cancelled: [],
+  failed: [],
+  stale: [],
+};
+
+export function isRunStatus(value: unknown): value is RunStatus {
+  return typeof value === "string" && Object.hasOwn(transitions, value);
+}
+
+export function isRunTransitionAllowed(
+  from: RunStatus,
+  to: RunStatus,
+): boolean {
+  return transitions[from].includes(to);
+}
+
+function stateRoot(): string {
+  const configured = process.env.MILL_STATE_HOME;
+  if (configured !== undefined) {
+    if (!path.isAbsolute(configured)) {
+      throw new MillError(
+        "INVALID_STATE_HOME",
+        "MILL_STATE_HOME must be absolute.",
+        ExitCode.configuration,
+      );
+    }
+    return configured;
+  }
+  if (process.platform === "darwin") {
+    return path.join(homedir(), "Library", "Application Support", "mill");
+  }
+  const xdg = process.env.XDG_STATE_HOME;
+  return xdg !== undefined && path.isAbsolute(xdg)
+    ? path.join(xdg, "mill")
+    : path.join(homedir(), ".local", "state", "mill");
+}
+
+function namespace(repositoryId: string, commonDirectory: string): string {
+  return createHash("sha256")
+    .update(`${repositoryId}\0${path.resolve(commonDirectory)}`, "utf8")
+    .digest("hex");
+}
+
+export function repositoryStateDirectory(
+  repositoryId: string,
+  commonDirectory: string,
+): string {
+  return path.join(
+    stateRoot(),
+    "repositories",
+    namespace(repositoryId, commonDirectory),
+  );
+}
+
+function fromRow(row: RunRow): RunRecord {
+  return {
+    id: row.id,
+    repositoryId: row.repository_id,
+    taskId: row.task_id,
+    taskDigest: row.task_digest,
+    configDigest: row.config_digest,
+    status: row.status,
+    baseCommit: row.base_commit,
+    ...(row.worktree_path === null ? {} : { worktreePath: row.worktree_path }),
+    ...(row.context_digest === null
+      ? {}
+      : { contextDigest: row.context_digest }),
+    ...(row.context_json === null ? {} : { contextJson: row.context_json }),
+    ...(row.control_json === null ? {} : { controlJson: row.control_json }),
+    ...(row.candidate_commit === null
+      ? {}
+      : { candidateCommit: row.candidate_commit }),
+    ...(row.candidate_tree === null
+      ? {}
+      : { candidateTree: row.candidate_tree }),
+    deadlineAt: row.deadline_at,
+    ...(row.active_process_id === null
+      ? {}
+      : { activeProcessId: row.active_process_id }),
+    ...(row.active_pid === null ? {} : { activePid: row.active_pid }),
+    ...(row.active_process_group === null
+      ? {}
+      : { activeProcessGroup: row.active_process_group }),
+    ...(row.active_process_identity === null
+      ? {}
+      : { activeProcessIdentity: row.active_process_identity }),
+    cancelRequested: row.cancel_requested === 1,
+    repairCount: row.repair_count,
+    attemptCount: row.attempt_count,
+    ...(row.block_code === null ? {} : { blockCode: row.block_code }),
+    ...(row.validation_json === null
+      ? {}
+      : { validationJson: row.validation_json }),
+    ...(row.review_json === null ? {} : { reviewJson: row.review_json }),
+    ...(row.delivery_json === null ? {} : { deliveryJson: row.delivery_json }),
+    ...(row.remote_feedback_json === null
+      ? {}
+      : { remoteFeedbackJson: row.remote_feedback_json }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export class StateStore {
+  readonly directory: string;
+  readonly databasePath: string;
+  readonly worktreesDirectory: string;
+  readonly #database: DatabaseSync;
+  #closed = false;
+
+  private constructor(directory: string, database: DatabaseSync) {
+    this.directory = directory;
+    this.databasePath = path.join(directory, "state.sqlite3");
+    this.worktreesDirectory = path.join(directory, "worktrees");
+    this.#database = database;
+  }
+
+  static async open(
+    repositoryId: string,
+    commonDirectory: string,
+  ): Promise<StateStore> {
+    const directory = repositoryStateDirectory(repositoryId, commonDirectory);
+    await mkdir(path.join(directory, "worktrees"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await chmod(directory, 0o700);
+    await chmod(path.join(directory, "worktrees"), 0o700);
+    const databasePath = path.join(directory, "state.sqlite3");
+    const information = await lstat(databasePath)
+      .then((entry) => entry)
+      .catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        )
+          return undefined;
+        throw error;
+      });
+    if (
+      information !== undefined &&
+      (!information.isFile() || information.isSymbolicLink())
+    ) {
+      throw new MillError(
+        "INVALID_STATE_FILE",
+        "Operational state must be a regular Mill-owned database file.",
+        ExitCode.configuration,
+      );
+    }
+    const existed = information !== undefined;
+    let before = 0;
+    if (existed) {
+      const probe = new DatabaseSync(databasePath, {
+        readOnly: true,
+        allowExtension: false,
+        enableDoubleQuotedStringLiterals: false,
+      });
+      try {
+        before = stateSchemaVersion(probe);
+      } finally {
+        probe.close();
+      }
+    }
+    const migrationLease =
+      before < CURRENT_STATE_SCHEMA_VERSION
+        ? await acquireExclusiveLease({
+            path: path.join(directory, "writer-lease.sqlite3"),
+            activeCode: "WRITER_ALREADY_ACTIVE",
+            activeMessage:
+              "Another Mill writer is active for this repository; state upgrade is deferred.",
+            unavailableCode: "WRITER_LEASE_UNAVAILABLE",
+            unavailableMessage:
+              "The repository state upgrade lease could not be acquired safely.",
+          })
+        : undefined;
+    try {
+      const database = new DatabaseSync(databasePath, {
+        timeout: 5_000,
+        allowExtension: false,
+        enableDoubleQuotedStringLiterals: false,
+      });
+      database.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+        PRAGMA foreign_keys = ON;
+        PRAGMA trusted_schema = OFF;
+      `);
+      try {
+        if (existed && before > 0 && before < CURRENT_STATE_SCHEMA_VERSION) {
+          const preUpgrade = path.join(
+            directory,
+            `state-backup-preupgrade-v${before}-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}.sqlite3`,
+          );
+          await backup(database, preUpgrade);
+          await chmod(preUpgrade, 0o600);
+        }
+        applyStateMigrations(database);
+        assertCurrentStateMigrations(database);
+      } catch (error) {
+        database.close();
+        throw error;
+      }
+      await chmod(databasePath, 0o600);
+      return new StateStore(directory, database);
+    } finally {
+      await migrationLease?.release();
+    }
+  }
+
+  /** Opens an existing current state without creating, upgrading, or locking it. */
+  static async openReadOnly(
+    repositoryId: string,
+    commonDirectory: string,
+  ): Promise<StateStore | undefined> {
+    const directory = repositoryStateDirectory(repositoryId, commonDirectory);
+    const databasePath = path.join(directory, "state.sqlite3");
+    let information;
+    try {
+      information = await lstat(databasePath);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return undefined;
+      throw error;
+    }
+    if (!information.isFile() || information.isSymbolicLink()) {
+      throw new MillError(
+        "INVALID_STATE_FILE",
+        "Operational state must be a regular Mill-owned database file.",
+        ExitCode.configuration,
+      );
+    }
+    const database = new DatabaseSync(databasePath, {
+      readOnly: true,
+      timeout: 5_000,
+      allowExtension: false,
+      enableDoubleQuotedStringLiterals: false,
+    });
+    try {
+      database.exec(
+        "PRAGMA foreign_keys = ON; PRAGMA trusted_schema = OFF; PRAGMA query_only = ON;",
+      );
+      const schemaVersion = stateSchemaVersion(database);
+      if (schemaVersion < CURRENT_STATE_SCHEMA_VERSION) {
+        throw new MillError(
+          "STATE_UPGRADE_REQUIRED",
+          "Operational state is older than this Mill version; run an attended mutating command to upgrade it.",
+          ExitCode.configuration,
+          { schemaVersion, currentSchemaVersion: CURRENT_STATE_SCHEMA_VERSION },
+        );
+      }
+      assertCurrentStateMigrations(database);
+    } catch (error) {
+      database.close();
+      throw error;
+    }
+    return new StateStore(directory, database);
+  }
+
+  close(): void {
+    if (!this.#closed) {
+      this.#database.close();
+      this.#closed = true;
+    }
+  }
+
+  stats(): StateStats {
+    const byStatus = Object.fromEntries(
+      runStatuses.map((status) => [status, 0]),
+    ) as Record<RunStatus, number>;
+    const rows = this.#database
+      .prepare(
+        `SELECT status, COUNT(*) AS count
+         FROM runs GROUP BY status`,
+      )
+      .all() as unknown as { status: RunStatus; count: number }[];
+    for (const row of rows) {
+      if (!runStatuses.includes(row.status)) {
+        throw new MillError(
+          "INVALID_RUN_STATUS",
+          "Operational state contains an unknown run status.",
+          ExitCode.data,
+        );
+      }
+      byStatus[row.status] = row.count;
+    }
+    const totals = this.#database
+      .prepare(
+        `SELECT COUNT(*) AS total, COALESCE(SUM(attempt_count), 0) AS builder_attempts,
+                COALESCE(SUM(repair_count), 0) AS repairs FROM runs`,
+      )
+      .get() as { total: number; builder_attempts: number; repairs: number };
+    return {
+      schemaVersion: CURRENT_STATE_SCHEMA_VERSION,
+      migrations: stateMigrationHistory(this.#database),
+      runs: {
+        total: totals.total,
+        byStatus,
+        builderAttempts: totals.builder_attempts,
+        repairs: totals.repairs,
+      },
+    };
+  }
+
+  createRun(input: {
+    repositoryId: string;
+    taskId: string;
+    taskDigest: string;
+    configDigest: string;
+    baseCommit: string;
+    deadlineAt: string;
+    externalVerifierIds?: readonly string[];
+    taskPathHint?: string;
+  }): RunRecord {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.#transaction(() => {
+      for (const run of this.runs()) {
+        assertEffectAllowsNewWork(run);
+        if (run.status === "local_completed") {
+          localCompletionForRun(run, this.events(run.id));
+          if (
+            run.taskDigest === input.taskDigest &&
+            run.configDigest === input.configDigest
+          )
+            throw new MillError(
+              "OUTCOME_ALREADY_LOCALLY_COMPLETED",
+              "This exact approved task has a recorded local completion.",
+              ExitCode.configuration,
+            );
+        }
+      }
+      this.#database
+        .prepare(
+          `INSERT INTO runs(
+            id, repository_id, task_id, task_digest, config_digest, status,
+            base_commit, deadline_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          input.repositoryId,
+          input.taskId,
+          input.taskDigest,
+          input.configDigest,
+          input.baseCommit,
+          input.deadlineAt,
+          now,
+          now,
+        );
+      this.#event(id, "run.created", {
+        status: "approved",
+        ...(input.externalVerifierIds === undefined
+          ? {}
+          : { externalVerifierIds: input.externalVerifierIds }),
+        ...(input.taskPathHint === undefined
+          ? {}
+          : { taskPathHint: input.taskPathHint }),
+      });
+    });
+    return this.getRun(id);
+  }
+
+  getRun(id: string): RunRecord {
+    const row = this.#database
+      .prepare("SELECT * FROM runs WHERE id = ?")
+      .get(id) as RunRow | undefined;
+    if (row === undefined) {
+      throw new MillError(
+        "RUN_NOT_FOUND",
+        `Run not found: ${id}`,
+        ExitCode.data,
+      );
+    }
+    return fromRow(row);
+  }
+
+  latestRun(): RunRecord | undefined {
+    const row = this.#database
+      .prepare("SELECT * FROM runs ORDER BY created_at DESC LIMIT 1")
+      .get() as RunRow | undefined;
+    return row === undefined ? undefined : fromRow(row);
+  }
+
+  runs(): readonly RunRecord[] {
+    return (
+      this.#database
+        .prepare("SELECT * FROM runs ORDER BY created_at")
+        .all() as unknown as RunRow[]
+    ).map(fromRow);
+  }
+
+  transition(
+    id: string,
+    to: RunStatus,
+    eventType: string,
+    details: Record<string, string | number | boolean | null> = {},
+  ): RunRecord {
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      // Effect-specific reconciliation settles the journal before advancing
+      // an enclosing effect_unknown status. Never unlock it via a status alone.
+      if (
+        externalEffectBoundary(current).journalUnresolved &&
+        to !== "effect_unknown"
+      )
+        throw new MillError(
+          "GITHUB_RECONCILIATION_REQUIRED",
+          "The effect journal must be reconciled before a lifecycle transition.",
+          ExitCode.temporary,
+        );
+      if (
+        [
+          "running",
+          "cancelled",
+          "failed",
+          "stale",
+          "reviewed",
+          "proposing",
+        ].includes(to) &&
+        externalEffectBoundary(current).merged
+      )
+        assertEffectAllowsNewWork(current);
+      if (
+        to === "local_completed" ||
+        !transitions[current.status].includes(to)
+      ) {
+        throw new MillError(
+          "INVALID_RUN_TRANSITION",
+          `Cannot transition run from ${current.status} to ${to}.`,
+          ExitCode.configuration,
+        );
+      }
+      if (to === "running" && current.cancelRequested) {
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot start or resume execution.",
+          ExitCode.temporary,
+        );
+      }
+      if (to === "cancelled" && current.activeProcessId !== undefined) {
+        throw new MillError(
+          "CANCELLATION_IN_PROGRESS",
+          "The active execution must exit or be reconciled before cancellation is terminal.",
+          ExitCode.temporary,
+        );
+      }
+      const now = new Date().toISOString();
+      this.#database
+        .prepare(
+          "UPDATE runs SET status = ?, block_code = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(
+          to,
+          typeof details.code === "string" ? details.code : null,
+          now,
+          id,
+        );
+      this.#event(id, eventType, { from: current.status, to, ...details });
+    });
+    return this.getRun(id);
+  }
+
+  completeLocal(
+    id: string,
+    plan: z.infer<typeof localCompletionPlanSchema>,
+    approvalDigest: string,
+  ): RunRecord {
+    this.#transaction(() => {
+      const run = this.getRun(id);
+      assertEffectAllowsNewWork(run);
+      const now = new Date();
+      const receipt = localCompletionReceiptSchema.parse({
+        plan,
+        approvalDigest,
+        completedAt: now.toISOString(),
+      });
+      if (
+        run.status !== "reviewed" ||
+        run.cancelRequested ||
+        run.activeProcessId !== undefined ||
+        run.activePid !== undefined ||
+        run.activeProcessGroup !== undefined ||
+        run.activeProcessIdentity !== undefined ||
+        run.deliveryJson !== undefined ||
+        run.remoteFeedbackJson !== undefined ||
+        this.unresolvedMutatingWorkerInvocations(id).length !== 0 ||
+        plan.runId !== run.id ||
+        plan.repositoryId !== run.repositoryId ||
+        plan.taskDigest !== run.taskDigest ||
+        plan.configDigest !== run.configDigest ||
+        plan.candidateCommit !== run.candidateCommit ||
+        plan.candidateTree !== run.candidateTree ||
+        run.validationJson === undefined ||
+        canonicalDigest(run.validationJson) !== plan.validationDigest ||
+        run.reviewJson === undefined ||
+        canonicalDigest(run.reviewJson) !== plan.reviewDigest ||
+        canonicalDigest(plan) !== approvalDigest ||
+        Date.parse(plan.expiresAt) <= now.getTime()
+      )
+        throw new MillError(
+          "LOCAL_COMPLETION_MISMATCH",
+          "Local completion requires the current attended plan and a reviewed run without unsettled work or delivery.",
+          ExitCode.configuration,
+        );
+      this.#database
+        .prepare(
+          "UPDATE runs SET status = 'local_completed', block_code = NULL, updated_at = ? WHERE id = ?",
+        )
+        .run(receipt.completedAt, id);
+      this.#event(id, "run.local_completed", {
+        from: run.status,
+        to: "local_completed",
+        receipt,
+      });
+    });
+    return this.getRun(id);
+  }
+
+  setWorkspace(
+    id: string,
+    worktreePath: string,
+    contextDigest: string,
+    contextJson: string,
+    controlJson: string,
+  ): void {
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      if (
+        current.status !== "ready" ||
+        current.worktreePath !== undefined ||
+        current.contextDigest !== undefined ||
+        current.contextJson !== undefined ||
+        current.controlJson !== undefined
+      ) {
+        throw new MillError(
+          "INVALID_RUN_TRANSITION",
+          "A workspace can be bound exactly once while the run is ready.",
+          ExitCode.configuration,
+        );
+      }
+      this.#database
+        .prepare(
+          "UPDATE runs SET worktree_path = ?, context_digest = ?, context_json = ?, control_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(
+          worktreePath,
+          contextDigest,
+          contextJson,
+          controlJson,
+          new Date().toISOString(),
+          id,
+        );
+      this.#event(id, "workspace.created", { contextDigest });
+    });
+  }
+
+  commitCandidate(
+    id: string,
+    commit: string,
+    tree: string,
+    invocationId?: string,
+  ): RunRecord {
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      if (current.cancelRequested) {
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot publish a candidate commit.",
+          ExitCode.temporary,
+        );
+      }
+      if (current.status !== "running") {
+        throw new MillError(
+          "INVALID_RUN_TRANSITION",
+          `Cannot commit a candidate from ${current.status}.`,
+          ExitCode.configuration,
+        );
+      }
+      if (invocationId !== undefined) {
+        const invocation = this.#database
+          .prepare("SELECT run_id, phase FROM worker_invocations WHERE id = ?")
+          .get(invocationId) as { run_id: string; phase: string } | undefined;
+        if (
+          invocation?.run_id !== id ||
+          (invocation.phase !== "build" && invocation.phase !== "repair") ||
+          this.workerInvocationStatus(invocationId) !== "launch_started"
+        ) {
+          throw new MillError(
+            "WORKER_INVOCATION_SETTLEMENT_CONFLICT",
+            "Candidate publication requires its one started mutating worker invocation.",
+            ExitCode.configuration,
+          );
+        }
+      }
+      this.#database
+        .prepare(
+          `UPDATE runs SET candidate_commit = ?, candidate_tree = ?,
+           validation_json = NULL, review_json = NULL,
+           remote_feedback_json = NULL, status = 'committed',
+           block_code = NULL, updated_at = ? WHERE id = ?`,
+        )
+        .run(commit, tree, new Date().toISOString(), id);
+      this.#event(id, "candidate.committed", {
+        from: current.status,
+        to: "committed",
+        commit,
+        tree,
+      });
+      if (invocationId !== undefined) {
+        this.#invocationEvent(invocationId, "settled", {
+          outcome: "completed",
+          candidateCommit: commit,
+          candidateTree: tree,
+        });
+      }
+    });
+    return this.getRun(id);
+  }
+
+  completeValidation(id: string, value: string, passed: boolean): RunRecord {
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      if (current.cancelRequested) {
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot publish validation evidence.",
+          ExitCode.temporary,
+        );
+      }
+      if (current.status !== "committed") {
+        throw new MillError(
+          "INVALID_RUN_TRANSITION",
+          `Cannot record validation from ${current.status}.`,
+          ExitCode.configuration,
+        );
+      }
+      const status: RunStatus = passed ? "verified" : "blocked";
+      const code = passed ? null : "VALIDATION_FAILED";
+      this.#database
+        .prepare(
+          "UPDATE runs SET validation_json = ?, status = ?, block_code = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(value, status, code, new Date().toISOString(), id);
+      this.#event(id, passed ? "validation.passed" : "validation.failed", {
+        from: current.status,
+        to: status,
+        ...(code === null ? {} : { code }),
+      });
+    });
+    return this.getRun(id);
+  }
+
+  completeReview(
+    id: string,
+    value: string,
+    findings: number,
+    nonConverged: boolean,
+    invocationId: string,
+    completionDetails: Record<string, string | number | boolean | null> = {},
+    window?: ReviewWindow,
+  ): RunRecord {
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      if (current.cancelRequested) {
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot publish review evidence.",
+          ExitCode.temporary,
+        );
+      }
+      if (current.status !== "verified") {
+        throw new MillError(
+          "INVALID_RUN_TRANSITION",
+          `Cannot record review from ${current.status}.`,
+          ExitCode.configuration,
+        );
+      }
+      const invocation = this.#database
+        .prepare("SELECT run_id, phase FROM worker_invocations WHERE id = ?")
+        .get(invocationId) as { run_id: string; phase: string } | undefined;
+      if (
+        invocation?.run_id !== id ||
+        invocation.phase !== "review" ||
+        this.workerInvocationStatus(invocationId) !== "launch_started"
+      ) {
+        throw new MillError(
+          "WORKER_INVOCATION_SETTLEMENT_CONFLICT",
+          "Review publication requires its one started reviewer invocation.",
+          ExitCode.configuration,
+        );
+      }
+      const review = reviewResultSchema.parse(JSON.parse(value));
+      if (
+        review.candidateCommit !== current.candidateCommit ||
+        review.findings.length !== findings
+      )
+        throw new MillError(
+          "REVIEW_EVIDENCE_INVALID",
+          "Review candidate or count mismatch.",
+          ExitCode.data,
+        );
+      const blocking = blockingReviewFindings(
+        review,
+        current.configDigest,
+      ).length;
+      const status: RunStatus = blocking === 0 ? "reviewed" : "blocked";
+      const code =
+        blocking === 0
+          ? null
+          : nonConverged
+            ? "REVIEW_NON_CONVERGENCE"
+            : "REVIEW_FINDINGS";
+      if (window !== undefined) this.assertReviewAuthority(id, window);
+      this.#database
+        .prepare(
+          "UPDATE runs SET review_json = ?, status = ?, block_code = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(value, status, code, new Date().toISOString(), id);
+      this.#event(id, "review.completed", {
+        ...completionDetails,
+        candidateCommit: current.candidateCommit ?? null,
+        findings,
+        blockingFindings: blocking,
+        review,
+      });
+      this.#event(id, blocking === 0 ? "review.passed" : "review.blocked", {
+        from: current.status,
+        to: status,
+        findings,
+        ...(code === null ? {} : { code }),
+      });
+      this.#invocationEvent(invocationId, "settled", {
+        outcome: "completed",
+        candidateCommit: current.candidateCommit ?? null,
+        findings,
+      });
+    });
+    return this.getRun(id);
+  }
+
+  setDelivery(
+    id: string,
+    deliveryJson: string,
+    eventType: string,
+    details: Record<string, string | number | boolean | null> = {},
+  ): RunRecord {
+    this.#transaction(() => {
+      this.getRun(id);
+      this.#database
+        .prepare(
+          "UPDATE runs SET delivery_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(deliveryJson, new Date().toISOString(), id);
+      this.#event(id, eventType, details);
+    });
+    return this.getRun(id);
+  }
+
+  /** The effect-specific controller supplies authoritative readback; publish its
+   * journal and lifecycle disposition together, never as two crashable writes. */
+  settleDraftEffect(
+    id: string,
+    expectedDeliveryJson: string,
+    nextDeliveryJson: string,
+  ): RunRecord {
+    this.#transaction(() => {
+      const run = this.getRun(id);
+      if (run.deliveryJson !== expectedDeliveryJson)
+        throw new MillError(
+          "GITHUB_RECONCILIATION_STATE_INVALID",
+          "The journal changed during readback.",
+          ExitCode.data,
+        );
+      const pending = reconcilableDraftEffect(run);
+      const previous = deliveryRecordSchema.parse(
+        JSON.parse(expectedDeliveryJson),
+      );
+      const next = deliveryRecordSchema.parse(JSON.parse(nextDeliveryJson));
+      const settled = next.effects.find((effect) => effect.id === pending.id);
+      const immutable = {
+        ...next,
+        effects: previous.effects,
+        state: previous.state,
+        remoteHeadCommit: previous.remoteHeadCommit,
+        pullRequest: previous.pullRequest,
+        lastErrorCode: previous.lastErrorCode,
+        updatedAt: previous.updatedAt,
+      };
+      if (
+        settled === undefined ||
+        canonicalDigest(immutable as JsonValue) !==
+          canonicalDigest(previous as JsonValue) ||
+        next.effects.length !== previous.effects.length ||
+        canonicalDigest(
+          next.effects.map((effect) =>
+            effect.id === pending.id ? pending : effect,
+          ),
+        ) !== canonicalDigest(previous.effects) ||
+        canonicalDigest({
+          ...settled,
+          status: pending.status,
+          errorCode: pending.errorCode,
+          updatedAt: pending.updatedAt,
+        }) !== canonicalDigest(pending) ||
+        !(
+          (next.state === "proposing" &&
+            (settled.status === "verified" ||
+              (settled.status === "retryable_absent" &&
+                pending.attemptCount < maximumRemoteEffectAttempts))) ||
+          (next.state === "awaiting_ci" &&
+            settled.status === "verified" &&
+            next.pullRequest !== null &&
+            next.remoteHeadCommit === next.candidateCommit) ||
+          (next.state === "blocked" &&
+            settled.status === "blocked" &&
+            pending.attemptCount >= maximumRemoteEffectAttempts)
+        )
+      )
+        throw new MillError(
+          "GITHUB_RECONCILIATION_STATE_INVALID",
+          "Settlement may only classify the exact pending effect and its lifecycle.",
+          ExitCode.data,
+        );
+      let status: RunStatus = next.state;
+      if (run.cancelRequested || isTerminalRun(run.status)) {
+        status = isTerminalRun(run.status) ? run.status : "cancelled";
+        next.state = "cancelled";
+        next.lastErrorCode = "OPERATOR_CANCELLED";
+      }
+      const now = new Date().toISOString();
+      next.updatedAt = now;
+      this.#database
+        .prepare(
+          "UPDATE runs SET delivery_json = ?, status = ?, block_code = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(JSON.stringify(next), status, next.lastErrorCode, now, id);
+      this.#event(id, "delivery.effect_reconciled", {
+        effectId: pending.id,
+        from: run.status,
+        to: status,
+        effectFrom: pending.status,
+        effectTo: settled.status,
+        attemptCount: settled.attemptCount,
+      });
+    });
+    return this.getRun(id);
+  }
+
+  setRemoteFeedback(id: string, feedbackJson: string): RunRecord {
+    this.#transaction(() => {
+      assertEffectAllowsNewWork(this.getRun(id));
+      this.#database
+        .prepare(
+          "UPDATE runs SET remote_feedback_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(feedbackJson, new Date().toISOString(), id);
+      this.#event(id, "remote.feedback_recorded", {});
+    });
+    return this.getRun(id);
+  }
+
+  replaceBlocker(
+    id: string,
+    code: string,
+    eventType: string,
+    details: Record<string, string | number | boolean | null> = {},
+  ): RunRecord {
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      if (current.status !== "blocked") {
+        throw new MillError(
+          "INVALID_RUN_TRANSITION",
+          `Cannot replace a blocker while run is ${current.status}.`,
+          ExitCode.configuration,
+        );
+      }
+      this.#database
+        .prepare("UPDATE runs SET block_code = ?, updated_at = ? WHERE id = ?")
+        .run(code, new Date().toISOString(), id);
+      this.#event(id, eventType, {
+        from: current.blockCode ?? null,
+        to: code,
+        ...details,
+      });
+    });
+    return this.getRun(id);
+  }
+
+  verificationRecovery(id: string): VerificationRecovery | undefined {
+    const events = this.events(id).filter(
+      (event) => event.type === "verification.recovery_applied",
+    );
+    if (events.length === 0) return undefined;
+    if (events.length !== 1)
+      recoveryError("Multiple recovery receipts are invalid.");
+    const data = events[0]?.data as {
+      receipt?: string;
+      approvalDigest?: string;
+    };
+    const plan = verificationRecoverySchema.parse(
+      JSON.parse(data.receipt ?? "null"),
+    );
+    if (recoveryDigest(plan) !== data.approvalDigest)
+      recoveryError("Recovery receipt digest mismatch.");
+    assertRecoveryBinding(this.getRun(id), plan);
+    return plan;
+  }
+
+  applyVerificationRecovery(
+    id: string,
+    plan: VerificationRecovery,
+    approvalDigest: string,
+  ): RunRecord {
+    this.#transaction(() => {
+      const run = this.getRun(id);
+      if (this.verificationRecovery(id) !== undefined)
+        recoveryError("Recovery is single use.");
+      assertRecoveryBinding(run, plan);
+      if (
+        !Number.isFinite(Date.parse(run.deadlineAt)) ||
+        Date.parse(run.deadlineAt) > Date.now()
+      )
+        recoveryError(
+          "Recovery requires expiration of the original builder deadline.",
+        );
+      if (
+        recoveryDigest(plan) !== approvalDigest ||
+        recoveryCheckpoint(this.events(id)) !== plan.checkpointDigest ||
+        eligibleVerificationFailure(run, this.events(id)) !==
+          plan.failureSequence ||
+        Date.parse(plan.expiresAt) <= Date.now()
+      )
+        recoveryError("Recovery approval is stale, expired or mismatched.");
+      assertEffectAllowsNewWork(run);
+      this.#database
+        .prepare(
+          "UPDATE runs SET status = 'committed', block_code = NULL, updated_at = ? WHERE id = ?",
+        )
+        .run(new Date().toISOString(), id);
+      this.#event(id, "verification.recovery_applied", {
+        from: "blocked",
+        to: "committed",
+        receipt: JSON.stringify(plan),
+        approvalDigest,
+      });
+    });
+    return this.getRun(id);
+  }
+
+  assertNoRecoveryBuilder(id: string): void {
+    if (this.verificationRecovery(id) !== undefined)
+      recoveryError(
+        "Candidate recovery grants no builder or repair authority.",
+      );
+  }
+
+  beginRepair(id: string, maximumRepairGenerations = 1): RunRecord {
+    this.assertNoRecoveryBuilder(id);
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      if (
+        !Number.isInteger(maximumRepairGenerations) ||
+        ![1, 2].includes(maximumRepairGenerations)
+      ) {
+        throw new MillError(
+          "INVALID_REPAIR_BUDGET",
+          "Repair generations must use the standard limit or the fixture-only experiment limit.",
+          ExitCode.configuration,
+        );
+      }
+      assertEffectAllowsNewWork(current);
+      if (current.cancelRequested) {
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot begin a repair execution.",
+          ExitCode.temporary,
+        );
+      }
+      if (
+        current.status !== "blocked" ||
+        current.repairCount >= maximumRepairGenerations
+      ) {
+        throw new MillError(
+          "REPAIR_BUDGET_EXHAUSTED",
+          "The approved repair budget is exhausted or the run is not blocked.",
+          ExitCode.configuration,
+        );
+      }
+      this.#database
+        .prepare(
+          "UPDATE runs SET repair_count = repair_count + 1, status = 'running', block_code = NULL, updated_at = ? WHERE id = ?",
+        )
+        .run(new Date().toISOString(), id);
+      this.#event(id, "repair.started", {
+        from: current.status,
+        to: "running",
+        repairCount: current.repairCount + 1,
+        maximumRepairGenerations,
+        candidateCommit: current.candidateCommit ?? null,
+        failureCode: current.blockCode ?? null,
+        validationJson: current.validationJson ?? null,
+        reviewJson: current.reviewJson ?? null,
+        remoteFeedbackJson: current.remoteFeedbackJson ?? null,
+      });
+    });
+    return this.getRun(id);
+  }
+
+  reviewRefreshScope(
+    id: string,
+  ): z.infer<typeof reviewScopeSchema> | undefined {
+    const run = this.getRun(id);
+    const row = this.#database
+      .prepare(
+        `SELECT data_json FROM run_events WHERE run_id = ? AND type = 'review.refresh_prepared' AND json_extract(data_json, '$.candidateCommit') = ? ORDER BY sequence DESC LIMIT 1`,
+      )
+      .get(id, run.candidateCommit ?? "") as { data_json: string } | undefined;
+    if (row === undefined) return undefined;
+    const data = JSON.parse(row.data_json) as { scope: unknown };
+    return reviewScopeSchema.parse(data.scope);
+  }
+
+  assertReviewAuthority(id: string, window: ReviewWindow): void {
+    assertReviewWindow({
+      ...window,
+      run: this.getRun(id),
+      recoveryExpiresAt: this.verificationRecovery(id)?.expiresAt,
+    });
+  }
+
+  prepareReviewRefresh(
+    id: string,
+    expectedReviewJson: string,
+    scope: z.infer<typeof reviewScopeSchema>,
+    maximum: number,
+    window: ReviewWindow,
+  ): RunRecord {
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      assertEffectAllowsNewWork(current);
+      if (current.cancelRequested)
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot refresh review.",
+          ExitCode.temporary,
+        );
+      if (
+        !["reviewed", "proposing"].includes(current.status) ||
+        current.reviewJson !== expectedReviewJson ||
+        current.validationJson === undefined
+      )
+        throw new MillError(
+          "REVIEW_REFRESH_UNAVAILABLE",
+          "Refresh requires unchanged successful review and validation before delivery.",
+          ExitCode.configuration,
+        );
+      const review = reviewResultSchema.parse(JSON.parse(expectedReviewJson));
+      const validation = validationEvidenceSchema.parse(
+        JSON.parse(current.validationJson),
+      );
+      const checked = reviewScopeSchema.parse(scope);
+      if (
+        !validation.passed ||
+        validation.candidateCommit !== current.candidateCommit ||
+        review.candidateCommit !== current.candidateCommit ||
+        blockingReviewFindings(review, current.configDigest).length !== 0 ||
+        checked.candidateCommit !== current.candidateCommit ||
+        checked.candidateTree !== current.candidateTree
+      )
+        throw new MillError(
+          "LOCAL_EVIDENCE_STALE",
+          "Refresh cannot change the candidate or bypass failed evidence.",
+          ExitCode.configuration,
+        );
+      if (review.scope?.digest === checked.digest)
+        throw new MillError(
+          "REVIEW_REFRESH_NOT_REQUIRED",
+          "The candidate already has this review scope.",
+          ExitCode.configuration,
+        );
+      if (current.deliveryJson !== undefined) {
+        const delivery = deliveryRecordSchema.parse(
+          JSON.parse(current.deliveryJson),
+        );
+        if (
+          delivery.effects.length !== 0 ||
+          delivery.pullRequest !== null ||
+          delivery.mergeApproval !== undefined ||
+          delivery.remoteHeadCommit !== null
+        )
+          throw new MillError(
+            "REVIEW_REFRESH_AFTER_EFFECT",
+            "Refresh cannot discard a delivery that has attempted external effects.",
+            ExitCode.configuration,
+          );
+      }
+      this.#assertReviewBudget(current, maximum);
+      this.assertReviewAuthority(id, {
+        ...window,
+        receiptDeadlineMs: Math.min(
+          window.receiptDeadlineMs,
+          externalEvidenceDeadlineMs(validation.externalReceipts),
+        ),
+      });
+      this.#database
+        .prepare(
+          "UPDATE runs SET status = 'verified', review_json = NULL, delivery_json = NULL, block_code = NULL, updated_at = ? WHERE id = ?",
+        )
+        .run(new Date().toISOString(), id);
+      this.#event(id, "review.refresh_prepared", {
+        candidateCommit: current.candidateCommit,
+        scope: checked,
+        previousReviewJson: current.reviewJson,
+        previousDeliveryJson: current.deliveryJson ?? null,
+        from: current.status,
+        to: "verified",
+      });
+    });
+    return this.getRun(id);
+  }
+
+  #assertReviewBudget(run: RunRecord, maximum: number): number {
+    const row = this.#database
+      .prepare(
+        `SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'review.started' AND json_extract(data_json, '$.candidateCommit') = ?`,
+      )
+      .get(run.id, run.candidateCommit ?? "") as { count: number };
+    if (row.count >= maximum)
+      throw new MillError(
+        "REVIEW_RETRY_BUDGET_EXHAUSTED",
+        "The bounded review attempt budget is exhausted.",
+        ExitCode.configuration,
+      );
+    return row.count + 1;
+  }
+
+  beginReviewAttempt(
+    id: string,
+    maximum: number,
+    authority?: { window: ReviewWindow; retryBlockCode?: string },
+  ): number {
+    let attempt = 0;
+    this.#transaction(() => {
+      const current = this.getRun(id);
+      assertEffectAllowsNewWork(current);
+      if (current.cancelRequested) {
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot begin a review attempt.",
+          ExitCode.temporary,
+        );
+      }
+      const retryBlockCode = authority?.retryBlockCode;
+      if (
+        retryBlockCode === undefined
+          ? current.status !== "verified"
+          : current.status !== "blocked" || current.blockCode !== retryBlockCode
+      ) {
+        throw new MillError(
+          "INVALID_RUN_TRANSITION",
+          `Cannot begin review from ${current.status}.`,
+          ExitCode.configuration,
+        );
+      }
+      if (current.candidateCommit === undefined) {
+        throw new MillError(
+          "CANDIDATE_MISSING",
+          "A review attempt requires an exact committed candidate.",
+          ExitCode.configuration,
+        );
+      }
+      attempt = this.#assertReviewBudget(current, maximum);
+      if (authority !== undefined)
+        this.assertReviewAuthority(id, authority.window);
+      if (retryBlockCode !== undefined) {
+        this.#database
+          .prepare(
+            "UPDATE runs SET status = 'verified', block_code = NULL, updated_at = ? WHERE id = ?",
+          )
+          .run(new Date().toISOString(), id);
+        this.#event(id, "review.retry_ready", {
+          from: current.status,
+          to: "verified",
+        });
+      }
+      this.#event(id, "review.started", {
+        candidateCommit: current.candidateCommit,
+        attempt,
+      });
+    });
+    return attempt;
+  }
+
+  recordBaselineQualification(input: {
+    approvalDigest: string;
+    repositoryId: string;
+    taskDigest: string;
+    configDigest: string;
+    baseCommit: string;
+    evidenceDigest: string;
+  }): void {
+    this.#transaction(() => {
+      this.#database
+        .prepare(
+          `INSERT OR IGNORE INTO baseline_qualifications(
+            approval_digest, repository_id, task_digest, config_digest,
+            base_commit, evidence_digest, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.approvalDigest,
+          input.repositoryId,
+          input.taskDigest,
+          input.configDigest,
+          input.baseCommit,
+          input.evidenceDigest,
+          new Date().toISOString(),
+        );
+      const stored = this.#database
+        .prepare(
+          `SELECT repository_id, task_digest, config_digest, base_commit,
+                  evidence_digest
+           FROM baseline_qualifications WHERE approval_digest = ?`,
+        )
+        .get(input.approvalDigest) as
+        | {
+            repository_id: string;
+            task_digest: string;
+            config_digest: string;
+            base_commit: string;
+            evidence_digest: string;
+          }
+        | undefined;
+      if (
+        stored?.repository_id !== input.repositoryId ||
+        stored.task_digest !== input.taskDigest ||
+        stored.config_digest !== input.configDigest ||
+        stored.base_commit !== input.baseCommit ||
+        stored.evidence_digest !== input.evidenceDigest
+      ) {
+        throw new MillError(
+          "QUALIFICATION_IDENTITY_COLLISION",
+          "Baseline qualification identity conflicts with stored state.",
+          ExitCode.io,
+        );
+      }
+    });
+  }
+
+  hasBaselineQualification(input: {
+    approvalDigest: string;
+    repositoryId: string;
+    taskDigest: string;
+    configDigest: string;
+    baseCommit: string;
+  }): boolean {
+    const row = this.#database
+      .prepare(
+        `SELECT 1 AS present FROM baseline_qualifications
+         WHERE approval_digest = ? AND repository_id = ? AND task_digest = ?
+           AND config_digest = ? AND base_commit = ?`,
+      )
+      .get(
+        input.approvalDigest,
+        input.repositoryId,
+        input.taskDigest,
+        input.configDigest,
+        input.baseCommit,
+      ) as { present: number } | undefined;
+    return row?.present === 1;
+  }
+
+  beginBuilderAttempt(id: string, maximum: number): void {
+    this.assertNoRecoveryBuilder(id);
+    if (this.getRun(id).cancelRequested) {
+      throw new MillError(
+        "OPERATOR_CANCELLED",
+        "A cancelled run cannot consume another builder attempt.",
+        ExitCode.temporary,
+      );
+    }
+    const result = this.#database
+      .prepare(
+        `UPDATE runs SET attempt_count = attempt_count + 1, updated_at = ?
+         WHERE id = ? AND attempt_count < ? AND cancel_requested = 0`,
+      )
+      .run(new Date().toISOString(), id, maximum);
+    if (result.changes !== 1) {
+      if (this.getRun(id).cancelRequested) {
+        throw new MillError(
+          "OPERATOR_CANCELLED",
+          "A cancelled run cannot consume another builder attempt.",
+          ExitCode.temporary,
+        );
+      }
+      throw new MillError(
+        "BUILDER_RETRY_BUDGET_EXHAUSTED",
+        "The builder retry budget is exhausted.",
+        ExitCode.configuration,
+      );
+    }
+  }
+
+  setActiveProcess(
+    id: string,
+    process: {
+      id: string;
+      pid: number;
+      processGroup: number;
+      identity: string;
+    } | null,
+  ): void {
+    if (
+      process !== null &&
+      (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+        process.id,
+      ) ||
+        !Number.isSafeInteger(process.pid) ||
+        process.pid <= 0 ||
+        process.processGroup !== process.pid ||
+        !/^sha256:[a-f0-9]{64}$/u.test(process.identity))
+    ) {
+      throw new MillError(
+        "INVALID_PROCESS_IDENTITY",
+        "An active PID and its opaque process-start identity must be stored together.",
+        ExitCode.configuration,
+      );
+    }
+    if (process === null) {
+      this.#database
+        .prepare(
+          "UPDATE runs SET active_process_id = NULL, active_pid = NULL, active_process_group = NULL, active_process_identity = NULL, updated_at = ? WHERE id = ?",
+        )
+        .run(new Date().toISOString(), id);
+      return;
+    }
+    const result = this.#database
+      .prepare(
+        `UPDATE runs SET active_process_id = ?, active_pid = ?,
+         active_process_group = ?, active_process_identity = ?, updated_at = ?
+         WHERE id = ? AND cancel_requested = 0 AND active_process_id IS NULL`,
+      )
+      .run(
+        process.id,
+        process.pid,
+        process.processGroup,
+        process.identity,
+        new Date().toISOString(),
+        id,
+      );
+    if (result.changes !== 1) {
+      throw new MillError(
+        "ACTIVE_PROCESS_BINDING_REJECTED",
+        "Cancellation or another active execution won before process binding.",
+        ExitCode.temporary,
+      );
+    }
+  }
+
+  clearActiveProcess(id: string, processId: string): void {
+    this.#database
+      .prepare(
+        `UPDATE runs SET active_process_id = NULL, active_pid = NULL,
+         active_process_group = NULL, active_process_identity = NULL,
+         updated_at = ? WHERE id = ? AND active_process_id = ?`,
+      )
+      .run(new Date().toISOString(), id, processId);
+  }
+
+  requestCancellation(id: string): RunRecord {
+    this.#transaction(() => {
+      const run = this.getRun(id);
+      if (terminal.has(run.status)) return;
+      this.#database
+        .prepare(
+          "UPDATE runs SET cancel_requested = 1, updated_at = ? WHERE id = ?",
+        )
+        .run(new Date().toISOString(), id);
+      this.#event(id, "run.cancellation_requested", {});
+    });
+    return this.getRun(id);
+  }
+
+  authorityPlans(): AuthorityPlanRecord[] {
+    return this.#database
+      .prepare(
+        "SELECT key, value FROM metadata WHERE key GLOB 'authority_plan:*'",
+      )
+      .all()
+      .map((row) => {
+        const record = parseAuthorityPlan(
+          JSON.parse(String(row.value)),
+          this.directory,
+        );
+        if (row.key !== `authority_plan:${record.approvalDigest}`)
+          throw new MillError(
+            "INVALID_AUTHORITY_PLAN",
+            "Authority plan key does not match its digest.",
+            ExitCode.data,
+          );
+        return record;
+      });
+  }
+
+  beginAuthorityPlan(record: AuthorityPlanRecord, duplicateCode: string): void {
+    const checked = parseAuthorityPlan(record, this.directory);
+    if (checked.state !== "intent")
+      throw new MillError(
+        "INVALID_AUTHORITY_PLAN",
+        "A plan must begin with durable intent.",
+        ExitCode.data,
+      );
+    this.#transaction(() => {
+      for (const run of this.runs()) assertEffectAllowsNewWork(run);
+      const result = this.#database
+        .prepare("INSERT OR IGNORE INTO metadata(key, value) VALUES (?, ?)")
+        .run(
+          `authority_plan:${checked.approvalDigest}`,
+          JSON.stringify(checked),
+        );
+      if (result.changes !== 1)
+        throw new MillError(
+          duplicateCode,
+          "This exact plan already has an apply intent. Reconcile its preserved worktree; do not replay it.",
+          ExitCode.configuration,
+        );
+    });
+  }
+
+  settleAuthorityPlan(
+    approvalDigest: string,
+    evidence: { branch: string; committedCommit?: string },
+  ): void {
+    this.#transaction(() => {
+      const previous = this.authorityPlans().find(
+        (item) => item.approvalDigest === approvalDigest,
+      );
+      if (
+        previous === undefined ||
+        isSettledAuthorityPlan(previous) ||
+        (previous.branch !== undefined && previous.branch !== evidence.branch)
+      )
+        throw new MillError(
+          "INVALID_AUTHORITY_PLAN",
+          "Authority plan cannot accept this settlement.",
+          ExitCode.data,
+        );
+      const record = parseAuthorityPlan(
+        {
+          ...previous,
+          ...evidence,
+          state:
+            evidence.committedCommit === undefined ? "applied" : "committed",
+        },
+        this.directory,
+      );
+      this.#database
+        .prepare("UPDATE metadata SET value = ? WHERE key = ?")
+        .run(JSON.stringify(record), `authority_plan:${approvalDigest}`);
+    });
+  }
+
+  abandonAuthorityPlan(
+    approvalDigest: string,
+    branch: string,
+    abandonedCommit: string,
+  ): void {
+    this.#transaction(() => {
+      const plan = this.authorityPlans().find(
+        (item) => item.approvalDigest === approvalDigest,
+      );
+      if (
+        plan === undefined ||
+        isSettledAuthorityPlan(plan) ||
+        plan.branch !== branch
+      )
+        throw new MillError(
+          "INVALID_AUTHORITY_PLAN",
+          "Only an unfinished plan on its recorded branch can be abandoned.",
+          ExitCode.configuration,
+        );
+      const record = parseAuthorityPlan(
+        { ...plan, state: "abandoned", abandonedCommit },
+        this.directory,
+      );
+      this.#database
+        .prepare("UPDATE metadata SET value = ? WHERE key = ?")
+        .run(JSON.stringify(record), `authority_plan:${approvalDigest}`);
+    });
+  }
+
+  beginAuthorityPlanPurge(
+    approvalDigest: string,
+    committedCommit: string,
+  ): void {
+    this.#transaction(() => {
+      const plan = this.authorityPlans().find(
+        (item) => item.approvalDigest === approvalDigest,
+      );
+      if (
+        plan === undefined ||
+        !isSettledAuthorityPlan(plan) ||
+        (plan.state === "abandoned" &&
+          plan.abandonedCommit !== committedCommit) ||
+        (plan.purgeCommit !== undefined && plan.purgeCommit !== committedCommit)
+      )
+        throw new MillError(
+          "INVALID_AUTHORITY_PLAN",
+          "Purge must bind a reconciled exact authority commit.",
+          ExitCode.data,
+        );
+      const checked = parseAuthorityPlan(
+        { ...plan, purgeCommit: committedCommit },
+        this.directory,
+      );
+      this.#database
+        .prepare("UPDATE metadata SET value = ? WHERE key = ?")
+        .run(JSON.stringify(checked), `authority_plan:${approvalDigest}`);
+    });
+  }
+
+  async backup(): Promise<string> {
+    const destination = path.join(
+      this.directory,
+      `state-backup-${new Date().toISOString().replaceAll(/[:.]/gu, "-")}.sqlite3`,
+    );
+    await backup(this.#database, destination);
+    await chmod(destination, 0o600);
+    return destination;
+  }
+
+  events(id: string): readonly Record<string, unknown>[] {
+    return this.#database
+      .prepare(
+        "SELECT sequence, occurred_at, type, data_json FROM run_events WHERE run_id = ? ORDER BY sequence",
+      )
+      .all(id)
+      .map((row) => {
+        const item = row as {
+          sequence: number;
+          occurred_at: string;
+          type: string;
+          data_json: string;
+        };
+        return {
+          sequence: item.sequence,
+          occurredAt: item.occurred_at,
+          type: item.type,
+          data: JSON.parse(item.data_json) as unknown,
+        };
+      });
+  }
+
+  /** Reads lifecycle state and its event journal from one SQLite snapshot. */
+  runEventSnapshot(id?: string): {
+    run?: RunRecord;
+    events: readonly Record<string, unknown>[];
+  } {
+    this.#database.exec("BEGIN");
+    try {
+      const run = id === undefined ? this.latestRun() : this.getRun(id);
+      const events =
+        run === undefined
+          ? []
+          : this.#database
+              .prepare(
+                "SELECT sequence, occurred_at, type, data_json FROM run_events WHERE run_id = ? ORDER BY sequence",
+              )
+              .all(run.id)
+              .map((row) => {
+                const item = row as {
+                  sequence: number;
+                  occurred_at: string;
+                  type: string;
+                  data_json: string;
+                };
+                try {
+                  const data = JSON.parse(item.data_json) as unknown;
+                  if (
+                    typeof data !== "object" ||
+                    data === null ||
+                    Array.isArray(data)
+                  ) {
+                    throw new Error("run event data must be an object");
+                  }
+                  return {
+                    sequence: item.sequence,
+                    occurredAt: item.occurred_at,
+                    type: item.type,
+                    data,
+                  };
+                } catch {
+                  return {
+                    sequence: item.sequence,
+                    occurredAt: item.occurred_at,
+                    type: item.type,
+                    journalDataInvalid: true,
+                  };
+                }
+              });
+      this.#database.exec("COMMIT");
+      return { ...(run === undefined ? {} : { run }), events };
+    } catch (error) {
+      try {
+        this.#database.exec("ROLLBACK");
+      } catch {
+        // Preserve the original read failure.
+      }
+      throw error;
+    }
+  }
+
+  recordEvent(
+    id: string,
+    type: string,
+    data: Record<string, string | number | boolean | null>,
+  ): void {
+    this.#transaction(() => this.#event(id, type, data));
+  }
+
+  admitWorkerInvocation(input: {
+    runId: string;
+    invocationId: string;
+    phase: string;
+    envelopeDigest: string;
+    envelopeJson: string;
+    reviewWindow?: ReviewWindow;
+  }): "created" | "existing" {
+    let disposition: "created" | "existing" = "existing";
+    this.#transaction(() => {
+      assertEffectAllowsNewWork(this.getRun(input.runId));
+      if (input.reviewWindow !== undefined)
+        this.assertReviewAuthority(input.runId, input.reviewWindow);
+      const result = this.#database
+        .prepare(
+          `INSERT OR IGNORE INTO worker_invocations(
+            id, run_id, phase, envelope_digest, envelope_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.invocationId,
+          input.runId,
+          input.phase,
+          input.envelopeDigest,
+          input.envelopeJson,
+          new Date().toISOString(),
+        );
+      const stored = this.#database
+        .prepare(
+          `SELECT run_id, phase, envelope_digest, envelope_json
+           FROM worker_invocations WHERE id = ?`,
+        )
+        .get(input.invocationId) as
+        | {
+            run_id: string;
+            phase: string;
+            envelope_digest: string;
+            envelope_json: string;
+          }
+        | undefined;
+      if (
+        stored?.run_id !== input.runId ||
+        stored.phase !== input.phase ||
+        stored.envelope_digest !== input.envelopeDigest ||
+        stored.envelope_json !== input.envelopeJson
+      ) {
+        throw new MillError(
+          "WORKER_INVOCATION_IDENTITY_CONFLICT",
+          "Worker invocation identity was reused with a different immutable envelope.",
+          ExitCode.configuration,
+        );
+      }
+      if (result.changes === 1) {
+        disposition = "created";
+        this.#invocationEvent(input.invocationId, "admitted", {
+          envelopeDigest: input.envelopeDigest,
+        });
+        this.#event(input.runId, "worker.admitted", {
+          invocationId: input.invocationId,
+          phase: input.phase,
+          envelopeDigest: input.envelopeDigest,
+        });
+      }
+    });
+    return disposition;
+  }
+
+  workerInvocationStatus(
+    invocationId: string,
+  ): "admitted" | "launch_started" | "settled" | "uncertain" | "reconciled" {
+    const exists = this.#database
+      .prepare("SELECT 1 AS present FROM worker_invocations WHERE id = ?")
+      .get(invocationId) as { present: number } | undefined;
+    if (exists?.present !== 1) {
+      throw new MillError(
+        "WORKER_INVOCATION_NOT_FOUND",
+        "Worker invocation admission was not found.",
+        ExitCode.data,
+      );
+    }
+    const events = this.#database
+      .prepare(
+        `SELECT type FROM worker_invocation_events
+         WHERE invocation_id = ? ORDER BY sequence`,
+      )
+      .all(invocationId) as unknown as { type: string }[];
+    if (events.some((event) => event.type === "reconciled")) {
+      return "reconciled";
+    }
+    if (events.some((event) => event.type === "uncertain")) return "uncertain";
+    if (events.some((event) => event.type === "settled")) return "settled";
+    if (events.some((event) => event.type === "launch_started")) {
+      return "launch_started";
+    }
+    return "admitted";
+  }
+
+  markWorkerLaunchStarted(invocationId: string): void {
+    this.#transaction(() => {
+      const status = this.workerInvocationStatus(invocationId);
+      if (status !== "admitted") {
+        throw new MillError(
+          "WORKER_INVOCATION_POSSIBLY_STARTED",
+          "A worker invocation with this identity may already have started and cannot be replayed.",
+          ExitCode.temporary,
+          { status },
+        );
+      }
+      this.#invocationEvent(invocationId, "launch_started", {});
+    });
+  }
+
+  settleWorkerInvocation(
+    invocationId: string,
+    outcome: "completed" | "failed" | "uncertain",
+    details: Record<string, string | number | boolean | null> = {},
+  ): void {
+    this.#transaction(() => {
+      const status = this.workerInvocationStatus(invocationId);
+      if (status !== "launch_started") {
+        throw new MillError(
+          "WORKER_INVOCATION_SETTLEMENT_CONFLICT",
+          "Worker settlement requires exactly one started, unsettled invocation.",
+          ExitCode.configuration,
+          { status },
+        );
+      }
+      this.#invocationEvent(
+        invocationId,
+        outcome === "uncertain" ? "uncertain" : "settled",
+        { outcome, ...details },
+      );
+    });
+  }
+
+  recordWorkerProcessExit(
+    runId: string,
+    invocationId: string,
+    processId?: string,
+  ): void {
+    this.#transaction(() => {
+      this.getRun(runId);
+      const invocation = this.#database
+        .prepare("SELECT run_id FROM worker_invocations WHERE id = ?")
+        .get(invocationId) as { run_id: string } | undefined;
+      if (
+        invocation?.run_id !== runId ||
+        this.workerInvocationStatus(invocationId) !== "launch_started"
+      ) {
+        throw new MillError(
+          "WORKER_PROCESS_EXIT_CONFLICT",
+          "Process exit evidence requires its one started, unsettled worker invocation.",
+          ExitCode.configuration,
+        );
+      }
+      const active = this.#database
+        .prepare("SELECT active_process_id FROM runs WHERE id = ?")
+        .get(runId) as { active_process_id: string | null };
+      if (
+        (processId !== undefined && active.active_process_id !== processId) ||
+        (processId === undefined && active.active_process_id !== null)
+      ) {
+        throw new MillError(
+          "WORKER_PROCESS_EXIT_CONFLICT",
+          "Process exit evidence does not match the active worker identity.",
+          ExitCode.configuration,
+        );
+      }
+      this.#invocationEvent(invocationId, "process_exited", {
+        processId: processId ?? null,
+      });
+      this.#database
+        .prepare(
+          `UPDATE runs SET active_process_id = NULL, active_pid = NULL,
+           active_process_group = NULL, active_process_identity = NULL,
+           updated_at = ? WHERE id = ?`,
+        )
+        .run(new Date().toISOString(), runId);
+      this.#event(runId, "worker.process_exited", { invocationId });
+    });
+  }
+
+  unresolvedMutatingWorkerInvocations(runId: string): readonly {
+    invocationId: string;
+    phase: "build" | "repair";
+    status: "launch_started" | "uncertain";
+    processExited: boolean;
+  }[] {
+    this.getRun(runId);
+    const rows = this.#database
+      .prepare(
+        `SELECT id, phase FROM worker_invocations
+         WHERE run_id = ? AND phase IN ('build', 'repair')
+         ORDER BY created_at, id`,
+      )
+      .all(runId) as unknown as { id: string; phase: "build" | "repair" }[];
+    return rows.flatMap((row) => {
+      const status = this.workerInvocationStatus(row.id);
+      if (status !== "launch_started" && status !== "uncertain") return [];
+      const uncertain = this.#database
+        .prepare(
+          `SELECT data_json FROM worker_invocation_events
+           WHERE invocation_id = ? AND type = 'uncertain'
+           ORDER BY sequence DESC LIMIT 1`,
+        )
+        .get(row.id) as { data_json: string } | undefined;
+      const observedExit = this.#database
+        .prepare(
+          `SELECT 1 AS present FROM worker_invocation_events
+           WHERE invocation_id = ? AND type = 'process_exited' LIMIT 1`,
+        )
+        .get(row.id) as { present: number } | undefined;
+      let processExited = observedExit?.present === 1;
+      if (uncertain !== undefined) {
+        try {
+          const details = JSON.parse(uncertain.data_json) as {
+            processExited?: unknown;
+          };
+          processExited = processExited || details.processExited === true;
+        } catch {
+          // Preserve separately journaled process-exit evidence.
+        }
+      }
+      return [
+        {
+          invocationId: row.id,
+          phase: row.phase,
+          status,
+          processExited,
+        },
+      ];
+    });
+  }
+
+  reconcileWorkerInvocation(
+    runId: string,
+    invocationId: string,
+    reason: "process_exit_observed" | "recorded_process_absent",
+  ): void {
+    this.#transaction(() => {
+      this.getRun(runId);
+      const invocation = this.#database
+        .prepare(`SELECT run_id, phase FROM worker_invocations WHERE id = ?`)
+        .get(invocationId) as { run_id: string; phase: string } | undefined;
+      if (
+        invocation?.run_id !== runId ||
+        (invocation.phase !== "build" && invocation.phase !== "repair")
+      ) {
+        throw new MillError(
+          "WORKER_INVOCATION_RECONCILIATION_CONFLICT",
+          "Worker invocation is not a mutating admission for this run.",
+          ExitCode.configuration,
+        );
+      }
+      const status = this.workerInvocationStatus(invocationId);
+      if (status !== "launch_started" && status !== "uncertain") {
+        throw new MillError(
+          "WORKER_INVOCATION_RECONCILIATION_CONFLICT",
+          "Only an unresolved mutating worker invocation can be reconciled.",
+          ExitCode.configuration,
+          { status },
+        );
+      }
+      this.#invocationEvent(invocationId, "reconciled", { reason });
+      this.#event(runId, "worker.reconciled", {
+        invocationId,
+        phase: invocation.phase,
+        reason,
+      });
+    });
+  }
+
+  #transaction(action: () => void): void {
+    try {
+      this.#database.exec("BEGIN IMMEDIATE");
+      action();
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      try {
+        this.#database.exec("ROLLBACK");
+      } catch {
+        // Preserve the original state error.
+      }
+      if (error instanceof MillError) throw error;
+      throw new MillError(
+        "STATE_WRITE_FAILED",
+        "Operational state transaction failed.",
+        ExitCode.io,
+        { cause: String(error) },
+      );
+    }
+  }
+
+  #event(id: string, type: string, data: Record<string, unknown>): void {
+    this.#database
+      .prepare(
+        "INSERT INTO run_events(run_id, occurred_at, type, data_json) VALUES (?, ?, ?, ?)",
+      )
+      .run(id, new Date().toISOString(), type, JSON.stringify(data));
+  }
+
+  #invocationEvent(
+    invocationId: string,
+    type: string,
+    data: Record<string, unknown>,
+  ): void {
+    this.#database
+      .prepare(
+        `INSERT INTO worker_invocation_events(
+          invocation_id, occurred_at, type, data_json
+        ) VALUES (?, ?, ?, ?)`,
+      )
+      .run(invocationId, new Date().toISOString(), type, JSON.stringify(data));
+  }
+}
+
+export type WriterLease = ExclusiveLease;
+
+export async function acquireWriterLease(
+  store: StateStore,
+): Promise<WriterLease> {
+  const leasePath = path.join(store.directory, "writer-lease.sqlite3");
+  return await acquireExclusiveLease({
+    path: leasePath,
+    activeCode: "WRITER_ALREADY_ACTIVE",
+    activeMessage: "Another Mill writer is active for this repository.",
+    unavailableCode: "WRITER_LEASE_UNAVAILABLE",
+    unavailableMessage:
+      "The repository writer lease could not be acquired safely.",
+  });
+}
+
+export async function restoreStateBackup(
+  repositoryId: string,
+  commonDirectory: string,
+  backupPath: string,
+): Promise<StateRestoreReport> {
+  const lease = await acquireOciResourceLease({
+    stateDirectory: repositoryStateDirectory(repositoryId, commonDirectory),
+  });
+  try {
+    return await restoreStateBackupWithLease(
+      repositoryId,
+      commonDirectory,
+      backupPath,
+    );
+  } finally {
+    await lease.release();
+  }
+}
+
+async function restoreStateBackupWithLease(
+  repositoryId: string,
+  commonDirectory: string,
+  backupPath: string,
+): Promise<StateRestoreReport> {
+  const directory = repositoryStateDirectory(repositoryId, commonDirectory);
+  const resolvedBackup = path.resolve(backupPath);
+  if (!isWithin(directory, resolvedBackup)) {
+    throw new MillError(
+      "INVALID_STATE_BACKUP",
+      "State backup must be a Mill-owned file in this repository namespace.",
+      ExitCode.configuration,
+    );
+  }
+  const information = await lstat(resolvedBackup);
+  if (!information.isFile() || information.isSymbolicLink()) {
+    throw new MillError(
+      "INVALID_STATE_BACKUP",
+      "State backup is not a regular file.",
+      ExitCode.configuration,
+    );
+  }
+  const databasePath = path.join(directory, "state.sqlite3");
+  const currentStore = await StateStore.open(repositoryId, commonDirectory);
+  try {
+    for (const run of currentStore.runs()) assertEffectAllowsNewWork(run);
+  } finally {
+    currentStore.close();
+  }
+  const temporaryPath = path.join(directory, `restore-${randomUUID()}.sqlite3`);
+  const expectedWorktrees = new Set<string>();
+  let quarantineManifest: string | undefined;
+  const moved: { original: string; quarantined: string }[] = [];
+  try {
+    await copyFile(resolvedBackup, temporaryPath, constants.COPYFILE_EXCL);
+    await chmod(temporaryPath, 0o600);
+    let candidate: DatabaseSync | undefined;
+    try {
+      candidate = new DatabaseSync(temporaryPath, {
+        readOnly: true,
+        allowExtension: false,
+        enableDoubleQuotedStringLiterals: false,
+      });
+      candidate.exec("PRAGMA trusted_schema = OFF; PRAGMA foreign_keys = ON;");
+      const integrity = candidate.prepare("PRAGMA integrity_check").get() as
+        { integrity_check?: string } | undefined;
+      const foreignKeyViolations = candidate
+        .prepare("PRAGMA foreign_key_check")
+        .all();
+      const version = candidate
+        .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
+        .get() as { value?: string } | undefined;
+      const requiredObjects = candidate
+        .prepare(
+          `SELECT name FROM sqlite_schema
+           WHERE (type = 'table' AND name IN ('metadata', 'runs', 'run_events'))
+              OR (type = 'table' AND name = 'baseline_qualifications')
+              OR (type = 'table' AND name IN ('worker_invocations', 'worker_invocation_events'))
+              OR (type = 'table' AND name = 'schema_migrations')
+              OR (type = 'trigger' AND name IN (
+                'run_events_no_update', 'run_events_no_delete',
+                'worker_invocations_no_update', 'worker_invocations_no_delete',
+                'worker_invocation_events_no_update', 'worker_invocation_events_no_delete'
+              ))`,
+        )
+        .all() as unknown as { name: string }[];
+      const worktrees = candidate
+        .prepare(
+          "SELECT worktree_path FROM runs WHERE worktree_path IS NOT NULL",
+        )
+        .all() as unknown as { worktree_path: string }[];
+      if (
+        integrity?.integrity_check !== "ok" ||
+        foreignKeyViolations.length > 0 ||
+        (version?.value !== "1" &&
+          version?.value !== "2" &&
+          version?.value !== "3" &&
+          version?.value !== String(CURRENT_STATE_SCHEMA_VERSION)) ||
+        new Set(requiredObjects.map((object) => object.name)).size !==
+          (version.value === "1" ? 6 : version.value === "2" ? 12 : 13)
+      ) {
+        throw new Error("backup integrity, schema version, or objects invalid");
+      }
+      if (version.value === String(CURRENT_STATE_SCHEMA_VERSION)) {
+        assertCurrentStateMigrations(candidate);
+      } else {
+        assertPhysicalStateSchema(candidate, Number(version.value));
+      }
+      const worktreesDirectory = path.join(directory, "worktrees");
+      const plans = candidate
+        .prepare(
+          "SELECT key, value FROM metadata WHERE key GLOB 'authority_plan:*'",
+        )
+        .all();
+      for (const row of plans) {
+        const record = parseAuthorityPlan(
+          JSON.parse(String(row.value)),
+          directory,
+        );
+        if (row.key !== `authority_plan:${record.approvalDigest}`)
+          throw new Error("authority plan key mismatch");
+        expectedWorktrees.add(record.worktreePath);
+      }
+      for (const row of worktrees) {
+        const resolved = path.resolve(row.worktree_path);
+        if (!isWithin(worktreesDirectory, resolved)) {
+          throw new Error("backup references a worktree outside Mill state");
+        }
+        expectedWorktrees.add(resolved);
+      }
+    } catch (error) {
+      throw new MillError(
+        "INVALID_STATE_BACKUP",
+        "State backup failed integrity and schema validation.",
+        ExitCode.data,
+        { cause: String(error) },
+      );
+    } finally {
+      candidate?.close();
+    }
+    const worktreesDirectory = path.join(directory, "worktrees");
+    const entries = await readdir(worktreesDirectory, { withFileTypes: true });
+    const orphaned = entries
+      .map((entry) => ({
+        entry,
+        original: path.join(worktreesDirectory, entry.name),
+      }))
+      .filter(({ original }) => !expectedWorktrees.has(path.resolve(original)));
+    if (orphaned.length > 0) {
+      for (const { entry } of orphaned) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) {
+          throw new MillError(
+            "UNSAFE_ORPHANED_WORKTREE",
+            "Restore found an unclassified entry in the Mill worktree directory.",
+            ExitCode.configuration,
+            { name: entry.name },
+          );
+        }
+      }
+      const quarantineId = `restore-${new Date()
+        .toISOString()
+        .replaceAll(/[:.]/gu, "-")}-${randomUUID()}`;
+      const quarantineDirectory = path.join(
+        directory,
+        "quarantine",
+        quarantineId,
+      );
+      await mkdir(quarantineDirectory, { recursive: true, mode: 0o700 });
+      await chmod(quarantineDirectory, 0o700);
+      quarantineManifest = path.join(quarantineDirectory, "manifest.json");
+      const planned = orphaned.map(({ entry, original }) => ({
+        original,
+        quarantined: path.join(quarantineDirectory, entry.name),
+      }));
+      await writeFile(
+        quarantineManifest,
+        `${JSON.stringify(
+          {
+            schemaVersion: "1",
+            repositoryId,
+            backupPath: resolvedBackup,
+            protocol: "database_swap_commit_point",
+            worktrees: planned,
+          },
+          null,
+          2,
+        )}\n`,
+        { encoding: "utf8", mode: 0o600, flag: "wx" },
+      );
+      for (const item of planned) {
+        await rename(item.original, item.quarantined);
+        moved.push(item);
+      }
+    }
+    await rm(`${databasePath}-wal`, { force: true });
+    await rm(`${databasePath}-shm`, { force: true });
+    await rename(temporaryPath, databasePath);
+    return {
+      quarantinedCount: moved.length,
+      ...(quarantineManifest === undefined ? {} : { quarantineManifest }),
+    };
+  } catch (error) {
+    for (const item of moved.toReversed()) {
+      try {
+        await rename(item.quarantined, item.original);
+      } catch {
+        // The recovery manifest preserves attended recovery evidence.
+      }
+    }
+    throw error;
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+export interface StateRestoreReport {
+  quarantinedCount: number;
+  quarantineManifest?: string;
+}
+
+export async function purgeRepositoryState(
+  repositoryId: string,
+  commonDirectory: string,
+  resourceLease?: OciResourceLease,
+): Promise<void> {
+  const directory = repositoryStateDirectory(repositoryId, commonDirectory);
+  const lease =
+    resourceLease ??
+    (await acquireOciResourceLease({ stateDirectory: directory }));
+  try {
+    assertOciLease(lease, directory);
+    await assertOciResourcesSettled(directory);
+    await purgeRepositoryStateWithLease(repositoryId, commonDirectory);
+  } finally {
+    if (resourceLease === undefined) await lease.release();
+  }
+}
+
+async function purgeRepositoryStateWithLease(
+  repositoryId: string,
+  commonDirectory: string,
+): Promise<void> {
+  const directory = repositoryStateDirectory(repositoryId, commonDirectory);
+  try {
+    await access(directory);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return;
+    throw error;
+  }
+  const store = await StateStore.open(repositoryId, commonDirectory);
+  try {
+    for (const run of store.runs()) assertEffectAllowsNewWork(run);
+    if (store.authorityPlans().some((plan) => !isSettledAuthorityPlan(plan)))
+      throw new MillError(
+        "AUTHORITY_PLANS_BLOCK_PURGE",
+        "Commit and reconcile generated authority worktrees before purging state.",
+        ExitCode.configuration,
+      );
+    for (const plan of store.authorityPlans()) {
+      if (plan.purgeCommit === undefined)
+        throw new MillError(
+          "AUTHORITY_PLANS_BLOCK_PURGE",
+          "Authority cleanup requires a durable exact-commit purge intent.",
+          ExitCode.configuration,
+        );
+      try {
+        await lstat(plan.worktreePath);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        )
+          continue;
+        throw error;
+      }
+      throw new MillError(
+        "AUTHORITY_PLANS_BLOCK_PURGE",
+        "Authority worktrees must be verified and removed through the attended state purge boundary.",
+        ExitCode.configuration,
+      );
+    }
+  } finally {
+    store.close();
+  }
+  await rm(directory, { recursive: true });
+}

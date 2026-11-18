@@ -1,0 +1,6 @@
+coverage/
+.mill-scratch/
+dist/
+node_modules/
+package-lock.json
+TEMP_MILL_GREENFIELD_WORK_PLAN_*.md
