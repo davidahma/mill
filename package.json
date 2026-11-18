@@ -57,14 +57,14 @@
   ],
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@types/node": "24.19.0",
-    "@vitest/coverage-v8": "5.0.2",
+    "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "5.1.0",
     "ajv": "8.20.0",
-    "eslint": "10.11.0",
+    "eslint": "10.15.0",
     "fast-check": "4.10.2",
-    "prettier": "3.9.9",
-    "typescript-eslint": "8.71.0",
-    "vitest": "5.0.2"
+    "prettier": "3.10.1",
+    "typescript-eslint": "8.72.2",
+    "vitest": "5.1.0"
   },
   "repository": {
     "type": "git",
