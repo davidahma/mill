@@ -128,7 +128,16 @@ describe("external verification in the committed-candidate lifecycle", () => {
         });
         await exec(
           process.env.MILL_GIT_PATH ?? "/usr/bin/git",
-          ["commit", "-m", "test: external acceptance"],
+          [
+            "-c",
+            "user.name=Mill External Evidence Test",
+            "-c",
+            "user.email=mill-external@example.invalid",
+            "commit",
+            "--no-gpg-sign",
+            "-m",
+            "test: external acceptance",
+          ],
           { cwd: f.root },
         );
         const baseline = await qualifyBaseline({
