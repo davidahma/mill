@@ -1,12 +1,17 @@
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { ChildProcess, execFile } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import {
   executeMaintainerReview,
   executePreparationSession,
 } from "../src/planning/review-session.js";
 
-vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<{
+    ChildProcess: typeof ChildProcess;
+  }>();
+  return { ChildProcess: actual.ChildProcess, execFile: vi.fn() };
+});
 
 function response(exitCode: number, stdout: string, stderr = "") {
   vi.mocked(execFile).mockImplementationOnce((...args: unknown[]) => {
@@ -22,7 +27,7 @@ function response(exitCode: number, stdout: string, stderr = "") {
       stdout,
       stderr,
     );
-    return {} as ReturnType<typeof execFile>;
+    return new ChildProcess();
   });
 }
 
