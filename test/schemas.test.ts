@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -61,6 +62,27 @@ const externalRequestSample = {
   profileDigest: digest,
   claims: [{ kind: "scenario", id: "SCN-GPU", digest }],
 };
+const maintainedOutcomeRequest = {
+  schemaVersion: "1",
+  outcomeId: "OUT-WHEEL",
+  policyPath: "quality/wheel-outcome.json",
+  policyCommit: "a".repeat(40),
+  policyDigest: digest,
+  subjectCommit: "b".repeat(40),
+  inputs: {
+    artifactDigest: digest,
+    runtimeDigest: digest,
+    checkDigest: digest,
+    checkMode: "100644",
+  },
+} as const;
+const claim = "The published wheel installs offline.";
+function publicKeyPem() {
+  return generateKeyPairSync("ed25519").publicKey.export({
+    type: "spki",
+    format: "pem",
+  });
+}
 const samples = {
   externalVerificationRequest: externalRequestSample,
   externalVerificationReceipt: {
@@ -83,6 +105,67 @@ const samples = {
       ],
     },
     signature: "A".repeat(86) + "==",
+  },
+  maintainedOutcomePolicy: {
+    schemaVersion: "1",
+    outcomeId: maintainedOutcomeRequest.outcomeId,
+    claim,
+    owner: "maintainer",
+    reuseScope: "immutable-inputs",
+    runtimePath: "python.lock",
+    checkPath: "scripts/wheel-smoke.py",
+    verifierPublicKeyPem: publicKeyPem(),
+    ownerPublicKeyPem: publicKeyPem(),
+    maxAgeSeconds: 3600,
+  },
+  maintainedOutcomeRequest,
+  maintainedOutcomeVerification: {
+    payload: {
+      kind: "maintained-outcome-verification",
+      request: maintainedOutcomeRequest,
+      producedAt: "2026-10-12T12:00:00.000Z",
+      result: "passed",
+    },
+    signature: "A".repeat(86) + "==",
+  },
+  maintainedOutcomeAcceptance: {
+    payload: {
+      schemaVersion: "1",
+      kind: "maintained-outcome-acceptance",
+      outcomeId: maintainedOutcomeRequest.outcomeId,
+      policyPath: maintainedOutcomeRequest.policyPath,
+      policyCommit: maintainedOutcomeRequest.policyCommit,
+      policyDigest: maintainedOutcomeRequest.policyDigest,
+      subjectCommit: maintainedOutcomeRequest.subjectCommit,
+      verificationDigest: digest,
+      acceptedAt: "2026-10-12T12:01:00.000Z",
+    },
+    signature: "A".repeat(86) + "==",
+  },
+  maintainedOutcomeHandoff: {
+    schemaVersion: "1",
+    outcomeId: maintainedOutcomeRequest.outcomeId,
+    claim,
+    owner: "maintainer",
+    policyPath: maintainedOutcomeRequest.policyPath,
+    policyCommit: maintainedOutcomeRequest.policyCommit,
+    policyDigest: maintainedOutcomeRequest.policyDigest,
+    subjectCommit: maintainedOutcomeRequest.subjectCommit,
+    artifactDigest: digest,
+    request: maintainedOutcomeRequest,
+    evidenceScope: "supplied-artifact-digest-and-selected-records",
+    status: "unverified",
+    reason: "VERIFICATION_MISSING",
+    changedInputs: [],
+    unavailableInputs: [],
+    verification: null,
+    ownerAcceptance: "not_recorded",
+    next: {
+      action: "verify",
+      owner: "maintainer",
+      scope: "Inspect the wheel.",
+    },
+    authorizationGranted: false,
   },
   adaptationManifest: {
     schemaVersion: "1",
@@ -807,6 +890,11 @@ const samples = {
 const schemaFiles = {
   externalVerificationRequest: "external-verification-request.schema.json",
   externalVerificationReceipt: "external-verification-receipt.schema.json",
+  maintainedOutcomeAcceptance: "maintained-outcome-acceptance.schema.json",
+  maintainedOutcomeHandoff: "maintained-outcome-handoff.schema.json",
+  maintainedOutcomePolicy: "maintained-outcome-policy.schema.json",
+  maintainedOutcomeRequest: "maintained-outcome-request.schema.json",
+  maintainedOutcomeVerification: "maintained-outcome-verification.schema.json",
   adaptationManifest: "adaptation-manifest.schema.json",
   changeRequest: "change-request.schema.json",
   auditReport: "audit-report.schema.json",
@@ -921,7 +1009,13 @@ describe("compact schemas", () => {
         path.join("schemas", schemaFiles[kind]),
         "utf8",
       );
-      const validate = ajv.compile(JSON.parse(source));
+      const schema = JSON.parse(source) as { $id: string };
+      if (kind.startsWith("maintainedOutcome")) {
+        expect(schema.$id).toBe(
+          `https://raw.githubusercontent.com/davidahma/mill/main/schemas/${schemaFiles[kind]}`,
+        );
+      }
+      const validate = ajv.compile(schema);
       expect(validate(samples[kind]), JSON.stringify(validate.errors)).toBe(
         true,
       );
@@ -929,6 +1023,101 @@ describe("compact schemas", () => {
       const withUnknown = { ...samples[kind], unexpected: true };
       expect(validate(withUnknown)).toBe(false);
       expect(contractSchemas[kind].safeParse(withUnknown).success).toBe(false);
+    }
+  });
+
+  it("requires immutable input scope and checks key identity and path separation in Mill", async () => {
+    const ajv = new Ajv2020({ allErrors: true, strict: true });
+    const validate = ajv.compile(
+      JSON.parse(
+        await readFile(
+          path.join("schemas", schemaFiles.maintainedOutcomePolicy),
+          "utf8",
+        ),
+      ),
+    );
+    const policy = samples.maintainedOutcomePolicy;
+    const otherScope = { ...policy, reuseScope: "mutable-inputs" };
+    expect(validate(otherScope)).toBe(false);
+    expect(
+      contractSchemas.maintainedOutcomePolicy.safeParse(otherScope).success,
+    ).toBe(false);
+    const internationalClaim = { ...policy, claim: "تثبيت الحزمة دون اتصال." };
+    const misleadingClaim = { ...policy, claim: "The probe passed\u202e." };
+    expect(validate(internationalClaim)).toBe(true);
+    expect(
+      contractSchemas.maintainedOutcomePolicy.safeParse(internationalClaim)
+        .success,
+    ).toBe(true);
+    expect(validate(misleadingClaim)).toBe(false);
+    expect(
+      contractSchemas.maintainedOutcomePolicy.safeParse(misleadingClaim)
+        .success,
+    ).toBe(false);
+    for (const separator of ["\u2028", "\u2029"]) {
+      const multiline = {
+        ...policy,
+        claim: "The probe passed." + separator + "Next decision",
+      };
+      expect(validate(multiline)).toBe(false);
+      expect(
+        contractSchemas.maintainedOutcomePolicy.safeParse(multiline).success,
+      ).toBe(false);
+    }
+    const wrongKind = generateKeyPairSync("ec", {
+      namedCurve: "prime256v1",
+    }).publicKey.export({ type: "spki", format: "pem" });
+    for (const invalid of [
+      { ...policy, ownerPublicKeyPem: wrongKind },
+      {
+        ...policy,
+        ownerPublicKeyPem: policy.verifierPublicKeyPem
+          .toString()
+          .replaceAll("\n", "\r\n"),
+      },
+      { ...policy, runtimePath: policy.checkPath },
+    ]) {
+      expect(validate(invalid)).toBe(true);
+      expect(
+        contractSchemas.maintainedOutcomePolicy.safeParse(invalid).success,
+      ).toBe(false);
+    }
+  });
+
+  it("rejects submillisecond maintained evidence timestamps in both validators", async () => {
+    const ajv = new Ajv2020({ allErrors: true, strict: true });
+    ajv.addFormat("date-time", (value) => Number.isFinite(Date.parse(value)));
+    const verification = samples.maintainedOutcomeVerification;
+    const acceptance = samples.maintainedOutcomeAcceptance;
+    const records = {
+      maintainedOutcomeVerification: {
+        ...verification,
+        payload: {
+          ...verification.payload,
+          producedAt: "2026-10-12T12:00:00.0009Z",
+        },
+      },
+      maintainedOutcomeAcceptance: {
+        ...acceptance,
+        payload: {
+          ...acceptance.payload,
+          acceptedAt: "2026-10-12T12:00:00.0001Z",
+        },
+      },
+    } as const;
+    for (const kind of [
+      "maintainedOutcomeVerification",
+      "maintainedOutcomeAcceptance",
+    ] as const) {
+      const validate = ajv.compile(
+        JSON.parse(
+          await readFile(path.join("schemas", schemaFiles[kind]), "utf8"),
+        ),
+      );
+      expect(validate(records[kind])).toBe(false);
+      expect(contractSchemas[kind].safeParse(records[kind]).success).toBe(
+        false,
+      );
     }
   });
 

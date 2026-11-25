@@ -6,6 +6,13 @@ export {
   type JsonValue,
 } from "./contracts/canonical.js";
 export {
+  maintainedOutcomeAcceptanceSchema,
+  maintainedOutcomeHandoffSchema,
+  maintainedOutcomePolicySchema,
+  maintainedOutcomeRequestSchema,
+  maintainedOutcomeVerificationSchema,
+} from "./contracts/maintained-outcome.js";
+export {
   contractSchemas,
   adaptationManifestSchema,
   playbookIndexSchema,

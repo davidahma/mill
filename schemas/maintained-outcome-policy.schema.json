@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "outcomeId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "claim": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\p{Cc}\\p{Bidi_Control}\\u2028\\u2029]+$"
+    },
+    "owner": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "reuseScope": { "type": "string", "const": "immutable-inputs" },
+    "runtimePath": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9._-]+\\/)*(?!\\.{1,2}$)[A-Za-z0-9._-]+$"
+    },
+    "checkPath": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9._-]+\\/)*(?!\\.{1,2}$)[A-Za-z0-9._-]+$"
+    },
+    "verifierPublicKeyPem": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^-----BEGIN PUBLIC KEY-----\\r?\\n(?:[A-Za-z0-9+/=]+\\r?\\n)+-----END PUBLIC KEY-----(?:\\r?\\n)?$"
+    },
+    "ownerPublicKeyPem": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^-----BEGIN PUBLIC KEY-----\\r?\\n(?:[A-Za-z0-9+/=]+\\r?\\n)+-----END PUBLIC KEY-----(?:\\r?\\n)?$"
+    },
+    "maxAgeSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
+  },
+  "required": [
+    "schemaVersion",
+    "outcomeId",
+    "claim",
+    "owner",
+    "reuseScope",
+    "runtimePath",
+    "checkPath",
+    "verifierPublicKeyPem",
+    "ownerPublicKeyPem",
+    "maxAgeSeconds"
+  ],
+  "additionalProperties": false,
+  "$id": "https://raw.githubusercontent.com/davidahma/mill/main/schemas/maintained-outcome-policy.schema.json",
+  "title": "MaintainedOutcomePolicy"
+}

@@ -5,6 +5,9 @@ independently accepted software change. Use real work in one trusted repository.
 The project bootstrap, publication, training tasks and synthetic canaries are
 outside this comparison.
 
+For the synthetic wheel pilot that checks evidence reuse and staleness, see
+[maintained outcome evidence](maintained-outcomes.md#replay-the-wheel-pilot).
+
 ## Decide before measuring
 
 - Name the owner who will accept each outcome. Agree on the same review standard

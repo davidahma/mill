@@ -40,9 +40,9 @@ Use the runs linked from the public repository's
 Inspect the result for the source revision you intend to use. Three checks are
 expected:
 
-- `validate` runs the native suite, local packed-package smoke, production
-  dependency audits for Mill and the web starter, and an exact-checkout
-  structural audit.
+- `validate` runs the native suite, the maintained-outcome wheel pilot through
+  the packed package, production dependency audits for Mill and the web starter,
+  and an exact-checkout structural audit.
 - `pnpm-oci` runs the pinned pnpm fixture in a real local Docker environment.
 - `python-oci` runs the pinned Python CPU fixture, including wheel installation
   and negative controls.

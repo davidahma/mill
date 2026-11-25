@@ -4,6 +4,12 @@ All notable changes follow Keep a Changelog and Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Inspect maintained outcome evidence with `handoff`. Mill distinguishes stale
+  inputs and signed failures from current verification and exact owner
+  acceptance.
+
 ## [0.10.0] - 2026-09-22
 
 ### Added

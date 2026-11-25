@@ -28,6 +28,11 @@ documents use the same data model.
 - `support-tuple.schema.json`
 - `public-alpha-qualification.schema.json`
 - `release-evidence.schema.json`
+- `maintained-outcome-policy.schema.json`
+- `maintained-outcome-request.schema.json`
+- `maintained-outcome-verification.schema.json`
+- `maintained-outcome-acceptance.schema.json`
+- `maintained-outcome-handoff.schema.json`
 
 Task packets are Git-owned approval contracts. Context manifests, validation
 evidence, review results, and delivery records are schema-versioned operational

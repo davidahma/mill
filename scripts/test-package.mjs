@@ -21,15 +21,35 @@ import { controllerArtifactDigest } from "../dist/config/controller-artifact.js"
 import { MILL_VERSION } from "../dist/version.js";
 
 const root = path.resolve(import.meta.dirname, "..");
-const temporary = await mkdtemp(path.join(tmpdir(), "mill-package-"));
 const npmCli = process.env.npm_execpath;
 const gitExecutable = process.env.MILL_GIT_PATH ?? "git";
+const portablePython = process.env.MILL_PORTABLE_RECEIPT_PYTHON;
 const externalKey = generateKeyPairSync("ed25519");
 const externalProfile = `sha256:${"b".repeat(64)}`;
 const externalVerifier = "portable";
 
 if (npmCli === undefined) {
   throw new Error("npm_execpath is required for package validation");
+}
+
+function requireWheelPython() {
+  const result = spawnSync(
+    portablePython ?? "python3",
+    [
+      "-I",
+      "-B",
+      "-c",
+      "import ensurepip, os, sys, venv; ensurepip.version(); print(os.path.realpath(sys.executable))",
+    ],
+    { cwd: root, encoding: "utf8", timeout: 20_000 },
+  );
+  const executable = result.stdout?.trim();
+  if (result.status !== 0 || !executable || !path.isAbsolute(executable)) {
+    throw new Error(
+      "Maintained wheel canary requires Python 3 with venv and pip support. Install it or set MILL_PORTABLE_RECEIPT_PYTHON to its absolute executable.",
+    );
+  }
+  return executable;
 }
 
 function npm(args, cwd) {
@@ -51,12 +71,12 @@ function npm(args, cwd) {
   return result.stdout;
 }
 
-function command(executable, args, cwd, env = process.env) {
+function command(executable, args, cwd, env = process.env, timeout = 120_000) {
   const result = spawnSync(executable, args, {
     cwd,
     encoding: "utf8",
     env,
-    timeout: 120_000,
+    timeout,
   });
   if (result.status !== 0) {
     throw new Error(
@@ -70,6 +90,8 @@ function digest(value) {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
+const wheelPython = requireWheelPython();
+const temporary = await mkdtemp(path.join(tmpdir(), "mill-package-"));
 try {
   const packOutput = npm(
     ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary],
@@ -97,6 +119,11 @@ try {
     "schemas/context-manifest.schema.json",
     "schemas/delivery-record.schema.json",
     "schemas/impact-manifest.schema.json",
+    "schemas/maintained-outcome-acceptance.schema.json",
+    "schemas/maintained-outcome-handoff.schema.json",
+    "schemas/maintained-outcome-policy.schema.json",
+    "schemas/maintained-outcome-request.schema.json",
+    "schemas/maintained-outcome-verification.schema.json",
     "schemas/mill-config.schema.json",
     "schemas/playbook-index.schema.json",
     "schemas/playbook.schema.json",
@@ -1520,9 +1547,8 @@ mill:
     })),
     reports: [{ name: "wheel", digest: digest(content), content }],
   };
-  const python = process.env.MILL_PORTABLE_RECEIPT_PYTHON;
   let receipt;
-  if (python === undefined) {
+  if (portablePython === undefined) {
     receipt = {
       payload,
       signature: sign(
@@ -1545,7 +1571,7 @@ mill:
     await writeFile(payloadFile, JSON.stringify(payload), { mode: 0o600 });
     receipt = JSON.parse(
       command(
-        python,
+        wheelPython,
         [
           path.join(root, "test/fixtures/external-receipt/sign.py"),
           payloadFile,
@@ -1598,7 +1624,23 @@ mill:
     throw new Error("packed CLI lost external verification or review");
   }
   process.stdout.write(
-    `package signed external receipt passed: ${python === undefined ? "synthetic Node signer" : "independent Python/OpenSSL signer"}\n`,
+    `package signed external receipt passed: ${portablePython === undefined ? "synthetic Node signer" : "independent Python/OpenSSL signer"}\n`,
+  );
+  process.stdout.write(
+    command(
+      wheelPython,
+      [
+        "-I",
+        "-B",
+        path.join(root, "scripts/qualify-maintained-outcome.py"),
+        process.execPath,
+        bin,
+      ],
+      temporary,
+      process.env,
+      // The pilot has a 300-second deadline and cleans up its child groups.
+      360_000,
+    ),
   );
 
   process.stdout.write(
