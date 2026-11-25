@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "payload": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "maintained-outcome-verification"
+        },
+        "request": {
+          "type": "object",
+          "properties": {
+            "schemaVersion": { "type": "string", "const": "1" },
+            "outcomeId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "policyPath": {
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^(?:(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9._-]+\\/)*(?!\\.{1,2}$)[A-Za-z0-9._-]+$"
+            },
+            "policyCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "policyDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "subjectCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "inputs": {
+              "type": "object",
+              "properties": {
+                "artifactDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "runtimeDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "checkDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "checkMode": { "type": "string", "enum": ["100644", "100755"] }
+              },
+              "required": [
+                "artifactDigest",
+                "runtimeDigest",
+                "checkDigest",
+                "checkMode"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "outcomeId",
+            "policyPath",
+            "policyCommit",
+            "policyDigest",
+            "subjectCommit",
+            "inputs"
+          ],
+          "additionalProperties": false
+        },
+        "producedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+        },
+        "result": { "type": "string", "enum": ["passed", "failed"] }
+      },
+      "required": ["kind", "request", "producedAt", "result"],
+      "additionalProperties": false
+    },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+  },
+  "required": ["payload", "signature"],
+  "additionalProperties": false,
+  "$id": "https://raw.githubusercontent.com/davidahma/mill/main/schemas/maintained-outcome-verification.schema.json",
+  "title": "MaintainedOutcomeVerification"
+}

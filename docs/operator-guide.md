@@ -89,6 +89,10 @@ resulting main are available.
 
 ## Resume or reconcile
 
+For a claim that still matters after delivery, use the
+[maintained outcome mode](maintained-outcomes.md) of `handoff`. It identifies
+what changed and which decision needs the owner's attention.
+
 ```sh
 millctl --json status --run RUN_ID
 millctl --json continuation --run RUN_ID

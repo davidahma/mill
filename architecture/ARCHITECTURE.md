@@ -41,6 +41,14 @@ read-only source, controlled short-lived model authentication, denied forge
 credentials and network destinations, bounded output and process cleanup. The
 current trusted-host review must not be described as this stronger boundary.
 
+The [maintained outcome handoff](../docs/maintained-outcomes.md) is a separate
+read-only projection. It uses an explicitly selected policy commit, a subject
+commit, an artifact digest supplied by the operator, and independently signed
+records. Git owns the policy, runtime descriptor and check inputs. The
+independent verifier owns observations of the artifact. The owner owns an
+acceptance decision tied to its exact subject and verification record. The
+projection leaves run history and action authority with their existing owners.
+
 ## Brownfield repository intelligence
 
 `discover` is a deterministic, derived-evidence boundary beside—not inside—the

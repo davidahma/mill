@@ -5,6 +5,10 @@
 - Node.js 24.20.0
 - npm with the committed lockfile
 - TypeScript 6
+- Python 3 with `venv` and `ensurepip`, and OpenSSL 3 on `PATH`, for the
+  required packed-package wheel pilot
+- macOS `sandbox-exec` or Linux `libseccomp.so.2` for the pilot's network
+  isolation
 
 Install the runtime in [`.node-version`](../.node-version), then use
 `npm ci --ignore-scripts`.
@@ -43,10 +47,14 @@ node scripts/qualify-python-oci.mjs
 
 The canaries prepare images using public dependency sources and a private
 loopback registry. The candidate verification itself uses offline OCI. The
-Python canary covers tests, wheel installation and negative controls. To use an
-independent Python signer in the packed-CLI receipt path, run
-`MILL_PORTABLE_RECEIPT_PYTHON=python3 npm run test:package` with Python 3 and
-OpenSSL 3 available. See [source distribution](release.md) for what CI covers.
+Python canary covers tests, wheel installation and negative controls. The
+packed-package gate also runs the
+[maintained-outcome wheel pilot](maintained-outcomes.md#replay-the-wheel-pilot)
+and fails if it cannot find a working Python interpreter. It uses `python3` by
+default. Set `MILL_PORTABLE_RECEIPT_PYTHON` to an absolute Python 3 executable
+to select a different interpreter and use its independent signer for the
+separate packed-CLI receipt test, as CI does. See
+[source distribution](release.md) for what CI covers.
 
 The [historical maintainer verifier](canaries/maintainer-verifier.md) documents
 a separately prepared exact offline image for an earlier source baseline. The

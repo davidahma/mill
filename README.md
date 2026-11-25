@@ -74,13 +74,14 @@ recovery paths. The `millctl start` wrapper can coordinate one ready outcome.
 
 ## What you can use
 
-| Workflow                        | Evidence and scope                                                                                                           |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Planning an existing repository | Read-only discovery, preparation, task compilation and readiness diagnostics                                                 |
-| Node and TypeScript             | Bundled Next.js recipe and bounded adoption. The pnpm workspace canary exercises one pinned layout.                          |
-| Python CLI or library           | Experimental build-only profile. Its real CPU fixture runs tests, builds a wheel and installs it offline.                    |
-| External verification           | Experimental signed receipt import for candidate-bound claims. The operator runs or delegates the job separately.            |
-| GitHub delivery                 | Optional attended draft PRs, exact-head check observation and provider readback. Requires your repository's delivery policy. |
+| Workflow                        | Evidence and scope                                                                                                                    |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Planning an existing repository | Read-only discovery, preparation, task compilation and readiness diagnostics                                                          |
+| Node and TypeScript             | Bundled Next.js recipe and bounded adoption. The pnpm workspace canary exercises one pinned layout.                                   |
+| Python CLI or library           | Experimental build-only profile. Its real CPU fixture runs tests, builds a wheel and installs it offline.                             |
+| External verification           | Experimental signed receipt import for candidate-bound claims. The operator runs or delegates the job separately.                     |
+| Maintained outcome evidence     | Inspect one signed claim against the selected artifact and verification inputs across revisions. [Guide](docs/maintained-outcomes.md) |
+| GitHub delivery                 | Optional attended draft PRs, exact-head check observation and provider readback. Requires your repository's delivery policy.          |
 
 The built-in Codex worker runs on a **trusted host**. Use it with source and
 host access you are comfortable exposing to the worker. The offline verifier

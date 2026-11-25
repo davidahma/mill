@@ -12,6 +12,19 @@ import {
   type PreparationSessionInput,
 } from "./planning/review-session.js";
 import { commandResult, formatHuman } from "./result.js";
+import { maintainedOutcomeHandoff } from "./runtime/maintained-outcome.js";
+
+interface HandoffOptions {
+  run?: string;
+  task?: string;
+  ownerDisposition?: string;
+  maintainedOutcome?: string;
+  policyCommit?: string;
+  subject?: string;
+  artifactDigest?: string;
+  evidence?: string;
+  acceptance?: string;
+}
 
 export function registerOperations(
   program: Command,
@@ -214,7 +227,7 @@ export function registerOperations(
   program
     .command("handoff")
     .description(
-      "show all recorded blockers, progress freshness and the next safe operation",
+      "show run blockers or maintained outcome evidence and the next decision",
     )
     .option("--run <id>", "run id, defaults to latest")
     .option(
@@ -225,22 +238,118 @@ export function registerOperations(
       "--owner-disposition <path>",
       "repository-relative terminal native owner disposition",
     )
-    .action(
-      async (options: {
-        run?: string;
-        task?: string;
-        ownerDisposition?: string;
-      }) =>
+    .option(
+      "--maintained-outcome <path>",
+      "repository-relative maintained outcome policy",
+    )
+    .option(
+      "--policy-commit <commit>",
+      "full commit selected as policy authority",
+    )
+    .option("--subject <commit>", "full commit to assess")
+    .option(
+      "--artifact-digest <digest>",
+      "caller-supplied artifact SHA-256 digest",
+    )
+    .option("--evidence <path>", "repository-relative signed verification")
+    .option("--acceptance <path>", "repository-relative signed owner decision")
+    .action(async (options: HandoffOptions) => {
+      const {
+        run,
+        task,
+        ownerDisposition,
+        maintainedOutcome,
+        policyCommit,
+        subject,
+        artifactDigest,
+        evidence,
+        acceptance,
+      } = options;
+      const maintenance = [
+        maintainedOutcome,
+        policyCommit,
+        subject,
+        artifactDigest,
+        evidence,
+        acceptance,
+      ].some((value) => value !== undefined);
+      if (!maintenance) {
         emit(
           "handoff",
           await operatorHandoff({
             root: await root(),
-            ...(options.run === undefined ? {} : { runId: options.run }),
-            ...(options.task === undefined ? {} : { taskPath: options.task }),
-            ...(options.ownerDisposition === undefined
+            ...(run === undefined ? {} : { runId: run }),
+            ...(task === undefined ? {} : { taskPath: task }),
+            ...(ownerDisposition === undefined
               ? {}
-              : { ownerDispositionPath: options.ownerDisposition }),
+              : { ownerDispositionPath: ownerDisposition }),
           }),
-        ),
-    );
+        );
+        return;
+      }
+      if (
+        run !== undefined ||
+        task !== undefined ||
+        ownerDisposition !== undefined
+      )
+        throw new MillError(
+          "HANDOFF_MODE_CONFLICT",
+          "Maintained outcome options cannot be combined with run handoff options.",
+          ExitCode.usage,
+        );
+      if (
+        maintainedOutcome === undefined ||
+        policyCommit === undefined ||
+        subject === undefined ||
+        artifactDigest === undefined
+      )
+        throw new MillError(
+          "MAINTAINED_OUTCOME_OPTIONS_REQUIRED",
+          "Supply --maintained-outcome, --policy-commit, --subject and --artifact-digest together.",
+          ExitCode.usage,
+        );
+      if (acceptance !== undefined && evidence === undefined)
+        throw new MillError(
+          "MAINTAINED_OUTCOME_EVIDENCE_REQUIRED",
+          "Supply the signed --evidence for the owner decision.",
+          ExitCode.usage,
+        );
+      const outcome = await maintainedOutcomeHandoff({
+        root: await root(),
+        policyPath: maintainedOutcome,
+        policyCommit,
+        subjectCommit: subject,
+        artifactDigest,
+        ...(evidence === undefined ? {} : { evidencePath: evidence }),
+        ...(acceptance === undefined ? {} : { acceptancePath: acceptance }),
+      });
+      if (program.opts<{ json?: boolean }>().json) emit("handoff", outcome);
+      else
+        io.stdout.write(
+          [
+            `${outcome.status.toUpperCase()}: ${outcome.outcomeId}`,
+            `- Claim: ${outcome.claim}`,
+            `- Reason: ${outcome.reason}`,
+            `- Policy: ${outcome.policyPath} at ${outcome.policyCommit}`,
+            `- Subject: ${outcome.subjectCommit}`,
+            `- Supplied artifact: ${outcome.artifactDigest}`,
+            ...(outcome.changedInputs.length === 0
+              ? []
+              : [`- Changed inputs: ${outcome.changedInputs.join(", ")}`]),
+            ...(outcome.unavailableInputs.length === 0
+              ? []
+              : [
+                  `- Unavailable inputs: ${outcome.unavailableInputs.join(", ")}`,
+                ]),
+            ...(outcome.verification === null
+              ? []
+              : [
+                  `- Verification: ${outcome.verification.digest} on ${outcome.verification.subjectCommit}`,
+                ]),
+            `- Owner acceptance: ${outcome.ownerAcceptance}`,
+            `- Next decision for ${outcome.next.owner}: ${outcome.next.scope}`,
+            "- Use --json for the subject, evidence, and verification request.",
+          ].join("\n") + "\n",
+        );
+    });
 }

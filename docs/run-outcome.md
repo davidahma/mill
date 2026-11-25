@@ -7,6 +7,9 @@ outcome record:
 millctl --json outcome --run <run-id>
 ```
 
+For evidence that a claim still holds across revisions, see
+[maintained outcome evidence](maintained-outcomes.md).
+
 The record binds task, base, candidate, lifecycle status, repair and attempt
 counts to recorded validation, review, delivery and usage evidence. When a run
 used a bounded integration-adaptation authority, it also summarizes the provider

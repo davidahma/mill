@@ -28,6 +28,26 @@ const definitions = {
     "external-verification-receipt.schema.json",
     "ExternalVerificationReceipt",
   ],
+  maintainedOutcomeAcceptance: [
+    "maintained-outcome-acceptance.schema.json",
+    "MaintainedOutcomeAcceptance",
+  ],
+  maintainedOutcomeHandoff: [
+    "maintained-outcome-handoff.schema.json",
+    "MaintainedOutcomeHandoff",
+  ],
+  maintainedOutcomePolicy: [
+    "maintained-outcome-policy.schema.json",
+    "MaintainedOutcomePolicy",
+  ],
+  maintainedOutcomeRequest: [
+    "maintained-outcome-request.schema.json",
+    "MaintainedOutcomeRequest",
+  ],
+  maintainedOutcomeVerification: [
+    "maintained-outcome-verification.schema.json",
+    "MaintainedOutcomeVerification",
+  ],
   changeEvidence: ["change-evidence.schema.json", "ChangeEvidence"],
   consumptionManifest: [
     "consumption-manifest.schema.json",
@@ -81,10 +101,14 @@ const definitions = {
 const check = process.argv.includes("--check");
 for (const [kind, [file, title]] of Object.entries(definitions)) {
   const schema = z.toJSONSchema(schemas[kind], { io: "input" });
+  // Preserve the identifiers of previously published contracts.
+  const schemaBase = kind.startsWith("maintainedOutcome")
+    ? "https://raw.githubusercontent.com/davidahma/mill/main/schemas"
+    : "https://github.com/davidahmann/mill/schemas";
   const output = await format(
     JSON.stringify({
       ...schema,
-      $id: `https://github.com/davidahmann/mill/schemas/${file}`,
+      $id: `${schemaBase}/${file}`,
       title,
     }),
     { parser: "json" },

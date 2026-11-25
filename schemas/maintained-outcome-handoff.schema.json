@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1" },
+    "outcomeId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "claim": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\p{Cc}\\p{Bidi_Control}\\u2028\\u2029]+$"
+    },
+    "owner": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "policyPath": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9._-]+\\/)*(?!\\.{1,2}$)[A-Za-z0-9._-]+$"
+    },
+    "policyCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "policyDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "subjectCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "artifactDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "request": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "schemaVersion": { "type": "string", "const": "1" },
+            "outcomeId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+            },
+            "policyPath": {
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^(?:(?!\\.{1,2}(?:\\/|$))[A-Za-z0-9._-]+\\/)*(?!\\.{1,2}$)[A-Za-z0-9._-]+$"
+            },
+            "policyCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "policyDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "subjectCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "inputs": {
+              "type": "object",
+              "properties": {
+                "artifactDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "runtimeDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "checkDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "checkMode": { "type": "string", "enum": ["100644", "100755"] }
+              },
+              "required": [
+                "artifactDigest",
+                "runtimeDigest",
+                "checkDigest",
+                "checkMode"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "outcomeId",
+            "policyPath",
+            "policyCommit",
+            "policyDigest",
+            "subjectCommit",
+            "inputs"
+          ],
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    },
+    "evidenceScope": {
+      "type": "string",
+      "const": "supplied-artifact-digest-and-selected-records"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["current", "stale", "failed", "unverified"]
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "POLICY_CHANGED",
+        "INPUTS_UNAVAILABLE",
+        "VERIFICATION_MISSING",
+        "VERIFICATION_INVALID",
+        "VERIFICATION_NOT_APPLICABLE",
+        "INPUTS_CHANGED",
+        "VERIFICATION_EXPIRED",
+        "VERIFICATION_FAILED",
+        "VERIFICATION_PASSED"
+      ]
+    },
+    "changedInputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["policy", "artifact", "runtime", "check"]
+      }
+    },
+    "unavailableInputs": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["runtime", "check"] }
+    },
+    "verification": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "subjectCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "producedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d\\.\\d{3}(?:Z))$"
+            },
+            "result": { "type": "string", "enum": ["passed", "failed"] }
+          },
+          "required": ["digest", "subjectCommit", "producedAt", "result"],
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    },
+    "ownerAcceptance": {
+      "type": "string",
+      "enum": ["accepted", "not_recorded", "stale", "invalid"]
+    },
+    "next": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "select-policy",
+            "resolve-inputs",
+            "verify",
+            "review-failure",
+            "accept",
+            "none"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "scope": { "type": "string", "minLength": 1, "maxLength": 256 }
+      },
+      "required": ["action", "owner", "scope"],
+      "additionalProperties": false
+    },
+    "authorizationGranted": { "type": "boolean", "const": false }
+  },
+  "required": [
+    "schemaVersion",
+    "outcomeId",
+    "claim",
+    "owner",
+    "policyPath",
+    "policyCommit",
+    "policyDigest",
+    "subjectCommit",
+    "artifactDigest",
+    "request",
+    "evidenceScope",
+    "status",
+    "reason",
+    "changedInputs",
+    "unavailableInputs",
+    "verification",
+    "ownerAcceptance",
+    "next",
+    "authorizationGranted"
+  ],
+  "additionalProperties": false,
+  "$id": "https://raw.githubusercontent.com/davidahma/mill/main/schemas/maintained-outcome-handoff.schema.json",
+  "title": "MaintainedOutcomeHandoff"
+}

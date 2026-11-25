@@ -4,6 +4,13 @@ import {
   externalVerificationRequestSchema,
   externalVerificationReceiptSchema,
 } from "./external-verification.js";
+import {
+  maintainedOutcomeAcceptanceSchema,
+  maintainedOutcomeHandoffSchema,
+  maintainedOutcomePolicySchema,
+  maintainedOutcomeRequestSchema,
+  maintainedOutcomeVerificationSchema,
+} from "./maintained-outcome.js";
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
 const versionSchema = z.string().min(1);
@@ -1970,6 +1977,11 @@ export const releaseEvidenceSchema = z.strictObject({
 export const contractSchemas = {
   externalVerificationRequest: externalVerificationRequestSchema,
   externalVerificationReceipt: externalVerificationReceiptSchema,
+  maintainedOutcomeAcceptance: maintainedOutcomeAcceptanceSchema,
+  maintainedOutcomeHandoff: maintainedOutcomeHandoffSchema,
+  maintainedOutcomePolicy: maintainedOutcomePolicySchema,
+  maintainedOutcomeRequest: maintainedOutcomeRequestSchema,
+  maintainedOutcomeVerification: maintainedOutcomeVerificationSchema,
   adaptationManifest: adaptationManifestSchema,
   changeRequest: changeRequestSchema,
   auditReport: auditReportSchema,
